@@ -1,9 +1,8 @@
 package com.thoughtworks
 
 
-import com.thoughtworks.DeepLearning.Differentiable.Aux
-import com.thoughtworks.DeepLearning.NeverChange
-import com.thoughtworks.DeepLearning.Patch.PairPatch
+import com.thoughtworks.Differentiable.NeverChange
+import com.thoughtworks.Differentiable.Patch.PairPatch
 import org.nd4j.linalg.api.ndarray.INDArray
 import org.nd4j.linalg.factory.Nd4j
 import org.nd4j.linalg.ops.transforms.Transforms
@@ -16,10 +15,24 @@ import scala.language.higherKinds
 import scalaz.syntax.Ops
 import scalaz.{-\/, Apply, Arrow, Category, Choice, Compose, Lens, Monoid, Semigroup, Split, Strong, \/, \/-}
 
-object DeepLearning {
+sealed trait Differentiable {
 
-  trait Multiply[=>:[_, _]] {
-    def multiply: INDArray =>: INDArray =>: INDArray
+  type Difference
+
+  type Self
+
+  def self: Self
+
+  import Differentiable._
+
+  implicit def patch: Patch[Self, Difference]
+
+}
+
+object Differentiable {
+  type Aux[Data, Difference0] = Differentiable {
+    type Self = Data
+    type Difference = Difference0
   }
 
   sealed trait Patch[Data, Difference] extends Monoid[Difference] {
@@ -28,26 +41,7 @@ object DeepLearning {
 
   }
 
-  sealed trait Differentiable {
-
-    type Difference
-
-    type Self
-
-    def self: Self
-
-    implicit def patch: Patch[Self, Difference]
-
-  }
-
-  object Differentiable {
-    type Aux[Data, Difference0] = Differentiable {
-      type Self = Data
-      type Difference = Difference0
-    }
-  }
-
-  object NeverChange
+  case object NeverChange
 
   object Patch {
 
@@ -266,54 +260,6 @@ object DeepLearning {
       override type Difference = NeverChange.type
 
       override implicit def patch = Patch.NeverChangePatch[Self, Difference]()
-    }
-
-
-    final case class PartialAppliedMultiply
-    (input0Data: INDArray, outer: Multiply.type)
-    (implicit protected val inputPatch: Patch[INDArray, Option[INDArray]])
-      extends DifferentiableFunction[INDArray, INDArray]
-        with Cache[PartialAppliedMultiply, Option[INDArray], NeverChange.type]
-        with PartialApplied[Option[INDArray], NeverChange.type] {
-
-      type Self = PartialAppliedMultiply
-
-      override implicit def patch: Patch[Self, Difference] = {
-        Patch.genericPatch(
-          Generic[Self],
-          Generic[Difference],
-          Patch.hconsPatch(inputPatch, Patch.hconsPatch(outer.patch, Patch.HNilPatch))
-        )
-      }
-
-      override def forward[InputData <: INDArray, InputDifference](input1: Differentiable.Aux[InputData, InputDifference]): Cache[INDArray, InputDifference, Difference] = {
-        type ExpectedDifferentiable = Differentiable.Aux[_ <: INDArray, _ >: Option[INDArray]]
-        input1 match {
-          case differentiable1: ExpectedDifferentiable =>
-            new Cache[INDArray, INDArray, Difference] {
-              type OutputDifference = Option[INDArray]
-
-              override def output = PatchOps(input0Data * differentiable1.self, Patch.INDArrayPatch)
-
-              override def backward(difference: OutputDifference) = new Differences[INDArray, Difference] {
-                override def inputDifference: INDArray = input0Data
-
-                override def weightDifference: Difference = new Difference(Some(differentiable1.self), NeverChange)
-              }
-            }
-        }
-      }.unsafeCast
-    }
-
-    object Multiply extends DifferentiableFunction[INDArray, PartialAppliedMultiply] with PureFunction {
-
-      override def forward[InputData <: INDArray, InputDifference](input0: Differentiable.Aux[InputData, InputDifference]): Cache[PartialAppliedMultiply, InputDifference, Difference] = {
-        type ExpectedDifferentiable = Differentiable.Aux[_ <: INDArray, _ >: Option[INDArray]]
-        input0 match {
-          case differentiable0: ExpectedDifferentiable =>
-            PartialAppliedMultiply(differentiable0.self, Multiply.this)
-        }
-      }.unsafeCast
     }
 
     final case class Compose[A, B, C, F <: DifferentiableFunction.Aux[B, C, F], G <: DifferentiableFunction.Aux[A, B, G]](f: F, g: G) extends DifferentiableFunction[A, C] {
@@ -590,9 +536,7 @@ object DeepLearning {
       }.unsafeCast
     }
 
-    implicit object DifferentiableFunctionInstances extends scalaz.Split[DifferentiableFunction] with Category[DifferentiableFunction] with scalaz.Choice[DifferentiableFunction] with Multiply[DifferentiableFunction] {
-
-      override def multiply = Multiply
+    implicit object DifferentiableFunctionInstances extends scalaz.Split[DifferentiableFunction] with Category[DifferentiableFunction] with scalaz.Choice[DifferentiableFunction] {
 
       override def compose[A, B, C](f: DifferentiableFunction[B, C], g: DifferentiableFunction[A, B]) = {
         new Compose[A, B, C, f.Self, g.Self](f, g)
