@@ -1,19 +1,15 @@
 package com.thoughtworks
 
 
+import cats._
+import cats.arrow._
+import cats.data.Xor
 import com.thoughtworks.Differentiable.NeverChange
 import com.thoughtworks.Differentiable.Patch.PairPatch
-import org.nd4j.linalg.api.ndarray.INDArray
-import org.nd4j.linalg.factory.Nd4j
-import org.nd4j.linalg.ops.transforms.Transforms
-import org.nd4s.Implicits._
-import org.nd4j.linalg.ops.transforms.Transforms._
-import shapeless.{::, DepFn0, DepFn1, DepFn2, Generic, HList, HNil, Poly0, PolyApply, Widen, the}
+import shapeless.{::, DepFn0, DepFn1, DepFn2, Generic, HList, HNil, Lens, Poly0, PolyApply, Widen, the}
 
 import scala.language.existentials
 import scala.language.higherKinds
-import scalaz.syntax.Ops
-import scalaz.{-\/, Apply, Arrow, Category, Choice, Compose, Lens, Monoid, Semigroup, Split, Strong, \/, \/-}
 
 sealed trait Differentiable {
 
@@ -35,7 +31,7 @@ object Differentiable {
     type Difference = Difference0
   }
 
-  sealed trait Patch[Data, Difference] extends Monoid[Difference] {
+  trait Patch[Data, Difference] extends Monoid[Difference] {
 
     def applyPatch(weight: Data, patch: Difference, learningRate: Double): Data
 
@@ -45,31 +41,39 @@ object Differentiable {
 
   object Patch {
 
-    final case class LeftPatch[Data, Difference](leftPatch: Patch[Data, Difference]) extends Patch[-\/[Data], Difference] {
-      override def applyPatch(weight: -\/[Data], patch: Difference, learningRate: Double): -\/[Data] = {
-        -\/(leftPatch.applyPatch(weight.a, patch, learningRate))
+    final case class Ops[Data, Difference0](override val self: Data, override val patch: Patch[Data, Difference0]) extends Differentiable {
+
+      override type Self = Data
+
+      type Difference = Difference0
+
+    }
+
+    final case class LeftPatch[Data, Difference](leftPatch: Patch[Data, Difference]) extends Patch[Xor.Left[Data], Difference] {
+      override def applyPatch(weight: Xor.Left[Data], patch: Difference, learningRate: Double): Xor.Left[Data] = {
+        Xor.Left(leftPatch.applyPatch(weight.a, patch, learningRate))
       }
 
-      override def zero: Difference = {
-        leftPatch.zero
+      override def empty: Difference = {
+        leftPatch.empty
       }
 
-      override def append(f1: Difference, f2: => Difference): Difference = {
-        leftPatch.append(f1, f2)
+      override def combine(f1: Difference, f2: Difference): Difference = {
+        leftPatch.combine(f1, f2)
       }
     }
 
-    final case class RightPatch[Data, Difference](rightPatch: Patch[Data, Difference]) extends Patch[\/-[Data], Difference] {
-      override def applyPatch(weight: \/-[Data], patch: Difference, learningRate: Double): \/-[Data] = {
-        \/-(rightPatch.applyPatch(weight.b, patch, learningRate))
+    final case class RightPatch[Data, Difference](rightPatch: Patch[Data, Difference]) extends Patch[Xor.Right[Data], Difference] {
+      override def applyPatch(weight: Xor.Right[Data], patch: Difference, learningRate: Double): Xor.Right[Data] = {
+        Xor.Right(rightPatch.applyPatch(weight.b, patch, learningRate))
       }
 
-      override def zero: Difference = {
-        rightPatch.zero
+      override def empty: Difference = {
+        rightPatch.empty
       }
 
-      override def append(f1: Difference, f2: => Difference): Difference = {
-        rightPatch.append(f1, f2)
+      override def combine(f1: Difference, f2: Difference): Difference = {
+        rightPatch.combine(f1, f2)
       }
     }
 
@@ -78,12 +82,12 @@ object Differentiable {
         (patch0.applyPatch(weight._1, patch._1, learningRate), patch1.applyPatch(weight._2, patch._2, learningRate))
       }
 
-      override def zero: (Difference0, Difference1) = {
-        (patch0.zero, patch1.zero)
+      override def empty: (Difference0, Difference1) = {
+        (patch0.empty, patch1.empty)
       }
 
-      override def append(f1: (Difference0, Difference1), f2: => (Difference0, Difference1)): (Difference0, Difference1) = {
-        (patch0.append(f1._1, f2._1), patch1.append(f1._2, f2._2))
+      override def combine(f1: (Difference0, Difference1), f2: (Difference0, Difference1)): (Difference0, Difference1) = {
+        (patch0.combine(f1._1, f2._1), patch1.combine(f1._2, f2._2))
       }
     }
 
@@ -92,46 +96,17 @@ object Differentiable {
         genereic.from(underlyingPatch.applyPatch(genereic.to(weight).head, patch, learningRate) :: HNil)
       }
 
-      override def append(f1: Difference, f2: => Difference): Difference = underlyingPatch.append(f1, f2)
+      override def combine(f1: Difference, f2: Difference): Difference = underlyingPatch.combine(f1, f2)
 
-      override def zero: Difference = underlyingPatch.zero
-    }
-
-    implicit object INDArrayPatch extends Patch[INDArray, Option[INDArray]] {
-      override def applyPatch(weight: INDArray, patch: Option[INDArray], learningRate: Double): INDArray = {
-        patch match {
-          case None =>
-            weight
-          case Some(delta) =>
-            weight + delta * learningRate
-        }
-      }
-
-      override def append(f1: Option[INDArray], f2: => Option[INDArray]): Option[INDArray] = {
-        f1 match {
-          case None =>
-            f2 match {
-              case None => None
-              case Some(f2Delta) => Some(f2Delta)
-
-            }
-          case Some(f1Delta) =>
-            f2 match {
-              case None => Some(f1Delta)
-              case Some(f2Delta) => Some(f1Delta + f2Delta)
-            }
-        }
-      }
-
-      override def zero = None
+      override def empty: Difference = underlyingPatch.empty
     }
 
     final case class NeverChangePatch[Data, Difference >: NeverChange.type]() extends Patch[Data, Difference] {
       override def applyPatch(weight: Data, patch: Difference, learningRate: Double) = weight
 
-      override def append(f1: Difference, f2: => Difference) = NeverChange
+      override def combine(f1: Difference, f2: Difference) = NeverChange
 
-      override def zero = NeverChange
+      override def empty = NeverChange
     }
 
     implicit def neverChangePatch[Data <: Singleton] = new NeverChangePatch[Data, NeverChange.type]
@@ -139,9 +114,9 @@ object Differentiable {
     implicit object HNilPatch extends Patch[HNil, HNil] {
       override def applyPatch(weight: HNil, patch: HNil, learningRate: Double) = HNil
 
-      override def append(f1: HNil, f2: => HNil) = HNil
+      override def combine(f1: HNil, f2: HNil) = HNil
 
-      override def zero = HNil
+      override def empty = HNil
     }
 
     implicit def hconsPatch[Head, HeadDifference, Tail <: HList, TailDifference <: HList]
@@ -151,11 +126,11 @@ object Differentiable {
           headPatch.applyPatch(weight.head, patch.head, learningRate) :: tailPatch.applyPatch(weight.tail, patch.tail, learningRate)
         }
 
-        override def append(f1: HeadDifference :: TailDifference, f2: => HeadDifference :: TailDifference): HeadDifference :: TailDifference = {
-          headPatch.append(f1.head, f2.head) :: tailPatch.append(f1.tail, f2.tail)
+        override def combine(f1: HeadDifference :: TailDifference, f2: HeadDifference :: TailDifference): HeadDifference :: TailDifference = {
+          headPatch.combine(f1.head, f2.head) :: tailPatch.combine(f1.tail, f2.tail)
         }
 
-        override def zero: HeadDifference :: TailDifference = headPatch.zero :: tailPatch.zero
+        override def empty: HeadDifference :: TailDifference = headPatch.empty :: tailPatch.empty
       }
     }
 
@@ -169,23 +144,16 @@ object Differentiable {
         genericData.from(hlistPatch.applyPatch(genericData.to(weight), genericDifference.to(patch), learningRate))
       }
 
-      override def append(f1: Difference, f2: => Difference): Difference = {
-        genericDifference.from(hlistPatch.append(genericDifference.to(f1), genericDifference.to(f2)))
+      override def combine(f1: Difference, f2: Difference): Difference = {
+        genericDifference.from(hlistPatch.combine(genericDifference.to(f1), genericDifference.to(f2)))
       }
 
-      override def zero: Difference = {
-        genericDifference.from(hlistPatch.zero)
+      override def empty: Difference = {
+        genericDifference.from(hlistPatch.empty)
       }
     }
   }
 
-  final case class PatchOps[Data, Difference0](override val self: Data, override val patch: Patch[Data, Difference0]) extends Ops[Data] with Differentiable {
-
-    override type Self = Data
-
-    type Difference = Difference0
-
-  }
 
   trait DifferentiableFunction[-Input, +Output] extends Differentiable {
 
@@ -332,17 +300,17 @@ object Differentiable {
         override type OutputDifference = Any
 
         override def output: Differentiable.Aux[Output, Any] = {
-          PatchOps(f(input.self), new Patch[Output, Any] {
+          Patch.Ops(f(input.self), new Patch[Output, Any] {
             override def applyPatch(weight: Output, patch: Any, learningRate: Double): Output = weight
 
-            override def zero: Any = NeverChange
+            override def empty: Any = NeverChange
 
-            override def append(f1: Any, f2: => Any) = NeverChange
+            override def combine(f1: Any, f2: Any) = NeverChange
           })
         }
 
         override def backward(difference: Any) = new Differences[InputDifference, NeverChange.type] {
-          override def inputDifference: InputDifference = input.patch.zero
+          override def inputDifference: InputDifference = input.patch.empty
 
           override def weightDifference = NeverChange
         }
@@ -362,8 +330,8 @@ object Differentiable {
       override def forward[InputData <: (A, C), InputDifference](input: Differentiable.Aux[InputData, InputDifference]) = {
         val (a: A with AnyRef, c: C with AnyRef) = input.self // See https://stackoverflow.com/questions/38735880/why-does-scala-compiler-forbid-declaration-of-a-wildcard-type-as-super-type-of-a/38736224
         @inline def forwardAC[DataA >: a.type <: A, DataC >: c.type <: C, DifferenceA, DifferenceC](patchA: Patch[DataA, DifferenceA], patchC: Patch[DataC, DifferenceC]) = {
-          val differentiableA = PatchOps[DataA, DifferenceA](a, patchA)
-          val differentiableC = PatchOps[DataC, DifferenceC](c, patchC)
+          val differentiableA = Patch.Ops[DataA, DifferenceA](a, patchA)
+          val differentiableC = Patch.Ops[DataC, DifferenceC](c, patchC)
           type InputDifference = (DifferenceA, DifferenceC)
           @inline def forwardB[DataB <: B](forwardFa: DifferentiableFunction.Cache[DataB, DifferenceA, fa.Difference]) = {
             val differentiableB = forwardFa.output
@@ -371,7 +339,7 @@ object Differentiable {
               override type OutputDifference = (forwardFa.OutputDifference, DifferenceC)
 
               override def output = {
-                PatchOps(
+                Patch.Ops(
                   Tuple2[DataB, DataC](differentiableB.self, c),
                   new PairPatch(differentiableB.patch, patchC)
                 )
@@ -429,7 +397,7 @@ object Differentiable {
               override type OutputDifference = (cacheF.OutputDifference, cacheG.OutputDifference)
 
               override def output = {
-                PatchOps(
+                Patch.Ops(
                   Tuple2[DataB, DataD](differentiableB.self, differentiableD.self),
                   new PairPatch(differentiableB.patch, differentiableD.patch)
                 )
@@ -450,10 +418,11 @@ object Differentiable {
               }
             }
           }
-          forwardBD(f.forward(PatchOps[DataA, DifferenceA](a, patchA)), g.forward(PatchOps[DataC, DifferenceC](c, patchC)))
+          forwardBD(f.forward(Patch.Ops[DataA, DifferenceA](a, patchA)), g.forward(Patch.Ops[DataC, DifferenceC](c, patchC)))
         }
 
         (input.patch: Any) match {
+
           case Patch.PairPatch(patch0, patch1) =>
             forwardAC(patch0.asInstanceOf[Patch[_ >: a.type <: A, _]], patch1.asInstanceOf[Patch[_ >: c.type <: C, _]])
           case Patch.NeverChangePatch() =>
@@ -464,7 +433,7 @@ object Differentiable {
       }.unsafeCast
     }
 
-    final case class Choice[A, B, C, F <: DifferentiableFunction.Aux[A, C, F], G <: DifferentiableFunction.Aux[B, C, G]](f: F, g: G) extends DifferentiableFunction[A \/ B, C] {
+    final case class Choice[A, B, C, F <: DifferentiableFunction.Aux[A, C, F], G <: DifferentiableFunction.Aux[B, C, G]](f: F, g: G) extends DifferentiableFunction[A Xor B, C] {
 
       type Self = Choice[A, B, C, F, G]
 
@@ -474,7 +443,7 @@ object Differentiable {
         Patch.genericPatch(Generic[Self], Generic[Difference], Patch.hconsPatch(f.patch, Patch.hconsPatch(g.patch, Patch.HNilPatch)))
       }
 
-      override def forward[InputData <: A \/ B, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache[_ <: C, InputDifference, Difference] = {
+      override def forward[InputData <: A Xor B, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache[_ <: C, InputDifference, Difference] = {
 
         def forwardAOrB[AOrB, FOrG <: DifferentiableFunction.Aux[AOrB, C, FOrG]](aOrB: AOrB, fOrG: FOrG)(weightDifferenceMaker: fOrG.Difference => (f.Difference, g.Difference)) = {
 
@@ -507,7 +476,7 @@ object Differentiable {
               }
             }
 
-            forwardC(fOrG.forward(PatchOps[DataAOrB, DifferenceAOrB](aOrBData, patch)))
+            forwardC(fOrG.forward(Patch.Ops[DataAOrB, DifferenceAOrB](aOrBData, patch)))
           }
 
           type AOrBPatch = Patch[_ <: AOrB, _]
@@ -522,21 +491,21 @@ object Differentiable {
         }
 
         input.self match {
-          case -\/(a) =>
+          case Xor.Left(a) =>
             val gPatch = g.patch
             forwardAOrB[A, F](a, f) { fDiff =>
-              (fDiff, gPatch.zero)
+              (fDiff, gPatch.empty)
             }
-          case \/-(b) =>
+          case Xor.Right(b) =>
             val fPatch = f.patch
             forwardAOrB[B, G](b, g) { gDiff =>
-              (fPatch.zero, gDiff)
+              (fPatch.empty, gDiff)
             }
         }
       }.unsafeCast
     }
 
-    implicit object DifferentiableFunctionInstances extends scalaz.Split[DifferentiableFunction] with Category[DifferentiableFunction] with scalaz.Choice[DifferentiableFunction] {
+    implicit object DifferentiableFunctionInstances extends cats.arrow.Split[DifferentiableFunction] with Category[DifferentiableFunction] with cats.arrow.Choice[DifferentiableFunction] {
 
       override def compose[A, B, C](f: DifferentiableFunction[B, C], g: DifferentiableFunction[A, B]) = {
         new Compose[A, B, C, f.Self, g.Self](f, g)
@@ -544,7 +513,7 @@ object Differentiable {
 
       override def id[A] = Id[A]()
 
-      override def choice[A, B, C](f: => DifferentiableFunction[A, C], g: => DifferentiableFunction[B, C]) = {
+      override def choice[A, B, C](f: DifferentiableFunction[A, C], g: DifferentiableFunction[B, C]) = {
         val f0 = f
         val g0 = g
         Choice[A, B, C, f0.Self, g0.Self](f0, g0)
@@ -558,17 +527,17 @@ object Differentiable {
       // TODO: Override methods in Arrow
     }
 
-    import scalaz.Isomorphism.<=>
+    trait Iso[A, B] extends DifferentiableFunction[A, B] {
 
-    final case class Iso[A, B](isoSet: A <=> B) extends DifferentiableFunction[A, B] {
+      protected def from(a: A): B
 
-      override type Self = Iso[A, B]
+      protected def to(b: B): A
 
-      override type Difference = NeverChange.type
+      override final type Difference = NeverChange.type
 
-      override implicit def patch = Patch.NeverChangePatch[Self, Difference]()
+      override final implicit def patch = Patch.NeverChangePatch[Self, Difference]()
 
-      override def forward[InputData <: A, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache[_ <: B, InputDifference, Difference] = ???
+      override final def forward[InputData <: A, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache[_ <: B, InputDifference, Difference] = ???
 
     }
 
