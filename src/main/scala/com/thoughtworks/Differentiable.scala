@@ -224,19 +224,19 @@ object Differentiable {
       type Self = Self0
     }
 
-    object PartialApplied {
+    object PartiallyApplied {
 
-      final case class PartialAppliedDifference[InputDifference, FDifference]
+      final case class PartiallyAppliedDifference[InputDifference, FDifference]
       (inputDifference: InputDifference, weightDifference: FDifference)
         extends Differences[InputDifference, FDifference]
 
     }
 
 
-    trait PartialApplied[InputDifference0, FDifference] {
+    trait PartiallyApplied[InputDifference0, FDifference] {
       _: DifferentiableFunction[_, _] with Cache[_, InputDifference0, FDifference] =>
 
-      type Difference = PartialApplied.PartialAppliedDifference[InputDifference0, FDifference]
+      type Difference = PartiallyApplied.PartiallyAppliedDifference[InputDifference0, FDifference]
 
       override def output: Self = this
 
@@ -255,9 +255,9 @@ object Differentiable {
       override implicit def patch = Patch.NeverChangePatch[Self, Difference]()
     }
 
-    final case class Compose[A, B, C, F <: DifferentiableFunction.Aux[B, C, F], G <: DifferentiableFunction.Aux[A, B, G]](f: F, g: G) extends DifferentiableFunction[A, C] {
+    final case class PartiallyAppliedCompose2[A, B, C, F <: DifferentiableFunction.Aux[B, C, F], G <: DifferentiableFunction.Aux[A, B, G]](f: F, g: G) extends DifferentiableFunction[A, C] {
 
-      override type Self = Compose[A, B, C, F, G]
+      override type Self = PartiallyAppliedCompose2[A, B, C, F, G]
 
       override type Difference = (f.Difference, g.Difference)
 
@@ -530,9 +530,9 @@ object Differentiable {
       }.unsafeCast
     }
 
-    final case class PartialAppliedConstant[A, B, DifferenceB](b: Differentiable.Aux[B, DifferenceB]) extends DifferentiableFunction[A, B] {
+    final case class PartiallyAppliedConstant[A, B, DifferenceB](b: Differentiable.Aux[B, DifferenceB]) extends DifferentiableFunction[A, B] {
 
-      override type Self = PartialAppliedConstant[A, B, DifferenceB]
+      override type Self = PartiallyAppliedConstant[A, B, DifferenceB]
 
       override type Difference = DifferenceB
 
@@ -541,11 +541,11 @@ object Differentiable {
         new IsoPatch[B, Self, DifferenceB] {
           override protected def fromPatch: Patch[B, DifferenceB] = underlyingPatch
 
-          override protected def forward(from: B): PartialAppliedConstant[A, B, DifferenceB] = {
+          override protected def forward(from: B): PartiallyAppliedConstant[A, B, DifferenceB] = {
             new Self(Differentiable(from, underlyingPatch))
           }
 
-          override protected def backward(to: PartialAppliedConstant[A, B, DifferenceB]): B = {
+          override protected def backward(to: PartiallyAppliedConstant[A, B, DifferenceB]): B = {
             to.b.self
           }
         }
@@ -588,7 +588,7 @@ object Differentiable {
     implicit object DifferentiableFunctionInstances extends ScalaPointfree[DifferentiableFunction] with cats.arrow.Split[DifferentiableFunction] with Category[DifferentiableFunction] with cats.arrow.Choice[DifferentiableFunction] {
 
       override def compose[A, B, C](f: DifferentiableFunction[B, C], g: DifferentiableFunction[A, B]) = {
-        new Compose[A, B, C, f.Self, g.Self](f, g)
+        new PartiallyAppliedCompose2[A, B, C, f.Self, g.Self](f, g)
       }
 
       override def id[A] = Id[A]()
