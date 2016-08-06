@@ -204,7 +204,9 @@ object Differentiable {
 
     }
 
-    trait Cache[+WeightDifference] {
+    trait Cache {
+
+      type WeightDifference
 
       type Output
 
@@ -223,9 +225,10 @@ object Differentiable {
     }
 
     object Cache {
-      type Aux[Output0, +InputDifference0, +WeightDifference] = Cache[WeightDifference] {
+      type Aux[Output0, +InputDifference0, +WeightDifference0] = Cache {
         type Output = Output0
         type InputDifference <: InputDifference0
+        type WeightDifference <: WeightDifference0
       }
     }
 
@@ -233,10 +236,10 @@ object Differentiable {
       type Self = Self0
     }
 
-    trait CacheFunction[FDifference] extends Cache[FDifference] {
+    trait CacheFunction extends Cache {
       _: DifferentiableFunction[_, _] =>
 
-      type Self >: this.type <: CacheFunction[FDifference]
+      type Self >: this.type <: CacheFunction
 
       override final type Output = Self
 
@@ -254,7 +257,8 @@ object Differentiable {
       override def forward[InputData <: A, InputDifference0](input: Differentiable.Aux[InputData, InputDifference0]): Cache.Aux[_ <: C, InputDifference0, Difference] = {
         val cacheG: Cache.Aux[_ <: B, InputDifference0, g.Difference] = g.forward(input)
         val cacheF: Cache.Aux[_ <: C, cacheG.OutputDifference, f.Difference] = f.forward[cacheG.Output, cacheG.OutputDifference](cacheG.output)
-        new Cache[Difference] {
+        new Cache {
+          override type WeightDifference = Difference
 
           type Output = cacheF.Output
 
@@ -287,7 +291,11 @@ object Differentiable {
       }
     }
 
-    //    final case class PartiallyAppliedCompose1[A, B, C, F <: DifferentiableFunction.Aux[B, C, F]](f: F) extends DifferentiableFunction[DifferentiableFunction[A, B], DifferentiableFunction[A, C]]
+//    final case class PartiallyAppliedCompose1[A, B, C, F <: DifferentiableFunction.Aux[B, C, F]](f: F)
+//      extends DifferentiableFunction[DifferentiableFunction[A, B], DifferentiableFunction[A, C]]
+//        with CacheFunction {
+//
+//    }
 
     final case class Compose[A, B, C]() extends DifferentiableFunction[DifferentiableFunction[B, C], DifferentiableFunction[DifferentiableFunction[A, B], DifferentiableFunction[A, C]]] {
 
@@ -309,7 +317,8 @@ object Differentiable {
       override implicit def patch = Patch.NeverChangePatch[Self, Difference]()
 
       override def forward[InputData <: A, InputDifference0](input: Differentiable.Aux[InputData, InputDifference0]) = {
-        new Cache[Difference] {
+        new Cache {
+          override type WeightDifference = Difference
 
           override type Output = InputData
 
@@ -335,7 +344,8 @@ object Differentiable {
 
       override implicit def patch = Patch.NeverChangePatch[Self, Difference]()
 
-      override def forward[InputData <: A, InputDifference0](input: Differentiable.Aux[InputData, InputDifference0]) = new Cache[Difference] {
+      override def forward[InputData <: A, InputDifference0](input: Differentiable.Aux[InputData, InputDifference0]) = new Cache {
+        override type WeightDifference = Difference
 
         override type Output = B
 
@@ -378,7 +388,8 @@ object Differentiable {
           val differentiableC = Differentiable[DataC, DifferenceC](c, patchC)
           @inline def forwardB[DataB <: B](forwardFa: Cache.Aux[DataB, DifferenceA, fa.Difference]) = {
             val differentiableB = forwardFa.output
-            new Cache[Difference] {
+            new Cache {
+              override type WeightDifference = Difference
 
               override type Output = (DataB, DataC)
               override type InputDifference = (DifferenceA, DifferenceC)
@@ -439,7 +450,8 @@ object Differentiable {
           ) = {
             val differentiableB = cacheF.output
             val differentiableD = cacheG.output
-            new Cache[Difference] {
+            new Cache {
+              override type WeightDifference = Difference
 
               override type Output = (DataB, DataD)
               override type InputDifference = (DifferenceA, DifferenceC)
@@ -502,7 +514,8 @@ object Differentiable {
 
             def forwardC[DataC <: C](cacheFOrG: Cache.Aux[DataC, DifferenceAOrB, fOrG.Difference]) = {
 
-              new Cache[Difference] {
+              new Cache {
+                override type WeightDifference = Difference
 
                 override type InputDifference = DifferenceAOrB
 
@@ -579,7 +592,8 @@ object Differentiable {
 
       override def forward[InputData <: A, InputDifference0](input: Differentiable.Aux[InputData, InputDifference0]): Cache.Aux[_ <: B, InputDifference0, Difference] = {
         val emptyInputPatch = input.patch.empty
-        new Cache[Difference] {
+        new Cache {
+          override type WeightDifference = Difference
           override type Output = B
 
           override type InputDifference = InputDifference0
