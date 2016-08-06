@@ -1,3 +1,7 @@
+name := "differentiable"
+
+crossScalaVersions := Seq("2.10.6", "2.11.8")
+
 incOptions := incOptions.value.withNameHashing(true).withRecompileOnMacroDef(false)
 
 libraryDependencies += "org.scalatest" %% "scalatest" % "3.0.0-M15" % Test
