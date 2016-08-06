@@ -530,7 +530,62 @@ object Differentiable {
       }.unsafeCast
     }
 
-    implicit object DifferentiableFunctionInstances extends cats.arrow.Split[DifferentiableFunction] with Category[DifferentiableFunction] with cats.arrow.Choice[DifferentiableFunction] {
+    final case class PartialAppliedConstant[A, B, DifferenceB](b: Differentiable.Aux[B, DifferenceB]) extends DifferentiableFunction[A, B] {
+
+      override type Self = PartialAppliedConstant[A, B, DifferenceB]
+
+      override type Difference = DifferenceB
+
+      override implicit def patch: Patch[Self, Difference] = {
+        val underlyingPatch = b.patch
+        new IsoPatch[B, Self, DifferenceB] {
+          override protected def fromPatch: Patch[B, DifferenceB] = underlyingPatch
+
+          override protected def forward(from: B): PartialAppliedConstant[A, B, DifferenceB] = {
+            new Self(Differentiable(from, underlyingPatch))
+          }
+
+          override protected def backward(to: PartialAppliedConstant[A, B, DifferenceB]): B = {
+            to.b.self
+          }
+        }
+      }
+
+      override def forward[InputData <: A, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache[_ <: B, InputDifference, Difference] = {
+        val emptyInputPatch = input.patch.empty
+        new Cache[B, InputDifference, Difference] {
+          override type Output = B
+
+          override type OutputDifference = DifferenceB
+
+          override def output: Differentiable.Aux[Output, OutputDifference] = b
+
+          override def backward(difference: OutputDifference): Differences[InputDifference, DifferenceB] = {
+            new Differences[InputDifference, DifferenceB] {
+              override def inputDifference: InputDifference = emptyInputPatch
+
+              override def weightDifference: DifferenceB = difference
+            }
+          }
+        }
+      }
+    }
+
+    final case class Constant[A, B]() extends DifferentiableFunction[B, DifferentiableFunction[A, B]] {
+
+      override type Self = Constant[A, B]
+
+      override type Difference = NeverChange.type
+
+      override implicit def patch: Patch[Self, Difference] = Patch.NeverChangePatch()
+
+      override def forward[InputData <: B, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache[_ <: DifferentiableFunction[A, B], InputDifference, Difference] = {
+        ???
+
+      }
+    }
+
+    implicit object DifferentiableFunctionInstances extends ScalaPointfree[DifferentiableFunction] with cats.arrow.Split[DifferentiableFunction] with Category[DifferentiableFunction] with cats.arrow.Choice[DifferentiableFunction] {
 
       override def compose[A, B, C](f: DifferentiableFunction[B, C], g: DifferentiableFunction[A, B]) = {
         new Compose[A, B, C, f.Self, g.Self](f, g)
