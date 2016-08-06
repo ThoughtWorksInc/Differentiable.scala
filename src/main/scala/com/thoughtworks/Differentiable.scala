@@ -711,7 +711,7 @@ object Differentiable {
       /**
         * Curried version of [[cats.arrow.Compose#compose]].
         */
-      override def compose[A, B, C]: DifferentiableFunction[DifferentiableFunction[B, C], DifferentiableFunction[DifferentiableFunction[A, B], DifferentiableFunction[A, C]]] = ???
+      override def compose[A, B, C] = Compose[A, B, C]()
 
       override def flip[A, B, C]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[B, DifferentiableFunction[A, C]]] = ???
 
