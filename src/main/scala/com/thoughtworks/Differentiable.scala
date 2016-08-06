@@ -4,8 +4,10 @@ package com.thoughtworks
 import cats._
 import cats.arrow._
 import cats.data.Xor
-import com.thoughtworks.Differentiable.NeverChange
-import com.thoughtworks.Differentiable.Patch.PairPatch
+import com.thoughtworks.Differentiable.{Aux, NeverChange}
+import com.thoughtworks.Differentiable.Patch.{IsoPatch, PairPatch}
+import com.thoughtworks.Pointfree.ScalaPointfree
+import shapeless.Generic.Aux
 import shapeless.{::, DepFn0, DepFn1, DepFn2, Generic, HList, HNil, Lens, Poly0, PolyApply, Widen, the}
 
 import scala.language.existentials
@@ -31,6 +33,21 @@ object Differentiable {
     type Difference = Difference0
   }
 
+  def unapply[Data, Difference0](arg: Differentiable.Aux[Data, Difference0]) = {
+    Some((arg.self, arg.patch))
+  }
+
+  def apply[Data, Difference0](self0: Data, patch0: Patch[Data, Difference0]): Aux[Data, Difference0] = new Differentiable {
+
+    override type Self = Data
+
+    type Difference = Difference0
+
+    override def self: Data = self0
+
+    override implicit def patch: Patch[Data, Difference0] = patch0
+  }
+
   trait Patch[Data, Difference] extends Monoid[Difference] {
 
     def applyPatch(weight: Data, patch: Difference, learningRate: Double): Data
@@ -40,14 +57,6 @@ object Differentiable {
   case object NeverChange
 
   object Patch {
-
-    final case class Ops[Data, Difference0](override val self: Data, override val patch: Patch[Data, Difference0]) extends Differentiable {
-
-      override type Self = Data
-
-      type Difference = Difference0
-
-    }
 
     final case class LeftPatch[Data, Difference](leftPatch: Patch[Data, Difference]) extends Patch[Xor.Left[Data], Difference] {
       override def applyPatch(weight: Xor.Left[Data], patch: Difference, learningRate: Double): Xor.Left[Data] = {
@@ -89,6 +98,22 @@ object Differentiable {
       override def combine(f1: (Difference0, Difference1), f2: (Difference0, Difference1)): (Difference0, Difference1) = {
         (patch0.combine(f1._1, f2._1), patch1.combine(f1._2, f2._2))
       }
+    }
+
+    trait IsoPatch[From, To, Difference] extends Patch[To, Difference] {
+      protected def fromPatch: Patch[From, Difference]
+
+      protected def forward(from: From): To
+
+      protected def backward(to: To): From
+
+      override def applyPatch(weight: To, patch: Difference, learningRate: Double): To = {
+        forward(fromPatch.applyPatch(backward(weight), patch, learningRate))
+      }
+
+      override def empty: Difference = fromPatch.empty
+
+      override def combine(x: Difference, y: Difference): Difference = fromPatch.combine(x, y)
     }
 
     implicit def wrapperPatch[Wrapper, Underlying, Difference](implicit genereic: Generic.Aux[Wrapper, Underlying :: HNil], underlyingPatch: Patch[Underlying, Difference]) = new Patch[Wrapper, Difference] {
@@ -300,7 +325,7 @@ object Differentiable {
         override type OutputDifference = Any
 
         override def output: Differentiable.Aux[Output, Any] = {
-          Patch.Ops(f(input.self), new Patch[Output, Any] {
+          Differentiable(f(input.self), new Patch[Output, Any] {
             override def applyPatch(weight: Output, patch: Any, learningRate: Double): Output = weight
 
             override def empty: Any = NeverChange
@@ -330,8 +355,8 @@ object Differentiable {
       override def forward[InputData <: (A, C), InputDifference](input: Differentiable.Aux[InputData, InputDifference]) = {
         val (a: A with AnyRef, c: C with AnyRef) = input.self // See https://stackoverflow.com/questions/38735880/why-does-scala-compiler-forbid-declaration-of-a-wildcard-type-as-super-type-of-a/38736224
         @inline def forwardAC[DataA >: a.type <: A, DataC >: c.type <: C, DifferenceA, DifferenceC](patchA: Patch[DataA, DifferenceA], patchC: Patch[DataC, DifferenceC]) = {
-          val differentiableA = Patch.Ops[DataA, DifferenceA](a, patchA)
-          val differentiableC = Patch.Ops[DataC, DifferenceC](c, patchC)
+          val differentiableA = Differentiable[DataA, DifferenceA](a, patchA)
+          val differentiableC = Differentiable[DataC, DifferenceC](c, patchC)
           type InputDifference = (DifferenceA, DifferenceC)
           @inline def forwardB[DataB <: B](forwardFa: DifferentiableFunction.Cache[DataB, DifferenceA, fa.Difference]) = {
             val differentiableB = forwardFa.output
@@ -339,7 +364,7 @@ object Differentiable {
               override type OutputDifference = (forwardFa.OutputDifference, DifferenceC)
 
               override def output = {
-                Patch.Ops(
+                Differentiable(
                   Tuple2[DataB, DataC](differentiableB.self, c),
                   new PairPatch(differentiableB.patch, patchC)
                 )
@@ -397,7 +422,7 @@ object Differentiable {
               override type OutputDifference = (cacheF.OutputDifference, cacheG.OutputDifference)
 
               override def output = {
-                Patch.Ops(
+                Differentiable(
                   Tuple2[DataB, DataD](differentiableB.self, differentiableD.self),
                   new PairPatch(differentiableB.patch, differentiableD.patch)
                 )
@@ -418,7 +443,7 @@ object Differentiable {
               }
             }
           }
-          forwardBD(f.forward(Patch.Ops[DataA, DifferenceA](a, patchA)), g.forward(Patch.Ops[DataC, DifferenceC](c, patchC)))
+          forwardBD(f.forward(Differentiable[DataA, DifferenceA](a, patchA)), g.forward(Differentiable[DataC, DifferenceC](c, patchC)))
         }
 
         (input.patch: Any) match {
@@ -476,7 +501,7 @@ object Differentiable {
               }
             }
 
-            forwardC(fOrG.forward(Patch.Ops[DataAOrB, DifferenceAOrB](aOrBData, patch)))
+            forwardC(fOrG.forward(Differentiable[DataAOrB, DifferenceAOrB](aOrBData, patch)))
           }
 
           type AOrBPatch = Patch[_ <: AOrB, _]
@@ -520,6 +545,31 @@ object Differentiable {
       }
 
       override def split[A, B, C, D](f: DifferentiableFunction[A, B], g: DifferentiableFunction[C, D]) = Split[A, B, C, D, f.Self, g.Self](f.self, g.self)
+
+      override def hcons[Head, Tail <: HList]: DifferentiableFunction[Head, DifferentiableFunction[Tail, ::[Head, Tail]]] = ???
+
+      override def head[Head, Tail <: HList]: DifferentiableFunction[::[Head, Tail], Head] = ???
+
+      override def tail[Head, Tail <: HList]: DifferentiableFunction[::[Head, Tail], Tail] = ???
+
+      override def select[S, A](lens: Lens[S, A]): DifferentiableFunction[S, A] = ???
+
+      override def from[T, Repr <: HList](generic: Generic.Aux[T, Repr]): DifferentiableFunction[Repr, T] = ???
+
+      override def to[T, Repr <: HList](generic: Generic.Aux[T, Repr]): DifferentiableFunction[T, Repr] = ???
+
+      override def apply[A, B](f: DifferentiableFunction[A, B], a: A): B = {
+        f.forward(Differentiable(a, Patch.NeverChangePatch[A, Any]())).output.self
+      }
+
+      override def constant[A, B] = Constant[A, B]()
+
+      /**
+        * Curried version of [[cats.arrow.Compose#compose]].
+        */
+      override def compose[A, B, C]: DifferentiableFunction[DifferentiableFunction[B, C], DifferentiableFunction[DifferentiableFunction[A, B], DifferentiableFunction[A, C]]] = ???
+
+      override def flip[A, B, C]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[B, DifferentiableFunction[A, C]]] = ???
 
       //      override def arr[A, B](f: (A) => B) = Arr(f)
       //      override def first[A, B, C](fa: DifferentiableFunction[A, B]) = First[A, B, C, fa.Self](fa)
