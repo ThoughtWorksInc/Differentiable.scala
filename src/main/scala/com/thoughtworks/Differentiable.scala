@@ -376,7 +376,7 @@ object Differentiable {
         @inline def forwardAC[DataA >: a.type <: A, DataC >: c.type <: C, DifferenceA, DifferenceC](patchA: Patch[DataA, DifferenceA], patchC: Patch[DataC, DifferenceC]) = {
           val differentiableA = Differentiable[DataA, DifferenceA](a, patchA)
           val differentiableC = Differentiable[DataC, DifferenceC](c, patchC)
-          @inline def forwardB[DataB <: B](forwardFa: DifferentiableFunction.Cache.Aux[DataB, DifferenceA, fa.Difference]) = {
+          @inline def forwardB[DataB <: B](forwardFa: Cache.Aux[DataB, DifferenceA, fa.Difference]) = {
             val differentiableB = forwardFa.output
             new Cache[Difference] {
 
@@ -434,8 +434,8 @@ object Differentiable {
         @inline def forwardAC[DataA >: a.type <: A, DataC >: c.type <: C, DifferenceA, DifferenceC](patchA: Patch[DataA, DifferenceA], patchC: Patch[DataC, DifferenceC]) = {
           @inline def forwardBD[DataB <: B, DataD <: D]
           (
-            cacheF: DifferentiableFunction.Cache.Aux[DataB, DifferenceA, f.Difference],
-            cacheG: DifferentiableFunction.Cache.Aux[DataD, DifferenceC, g.Difference]
+            cacheF: Cache.Aux[DataB, DifferenceA, f.Difference],
+            cacheG: Cache.Aux[DataD, DifferenceC, g.Difference]
           ) = {
             val differentiableB = cacheF.output
             val differentiableD = cacheG.output
