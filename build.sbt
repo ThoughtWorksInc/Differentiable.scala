@@ -6,13 +6,7 @@ incOptions := incOptions.value.withNameHashing(true).withRecompileOnMacroDef(fal
 
 libraryDependencies += "org.scalatest" %% "scalatest" % "3.0.0-M15" % Test
 
-libraryDependencies ++= {
-  if (scalaVersion.value.startsWith("2.10.")) {
-    Seq(compilerPlugin("org.scalamacros" % "paradise" % "2.1.0" cross CrossVersion.full))
-  } else {
-    Seq()
-  }
-}
+addCompilerPlugin("org.scalamacros" % "paradise" % "2.1.0" cross CrossVersion.full)
 
 scalacOptions in Compile in doc += "-implicits"
 
