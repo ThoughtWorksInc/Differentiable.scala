@@ -911,7 +911,7 @@ object Differentiable {
       override def compose[A, B, C] = Compose[A, B, C]()
 
       override def curry3[A, B, C, R]: DifferentiableFunction[DifferentiableFunction[A :: B :: C :: HNil, R], DifferentiableFunction[A, DifferentiableFunction[B, DifferentiableFunction[C, R]]]] = {
-        super.curry3
+        Curry3[A, B, C, R]()
       }
 
       override def flip[A, B, C]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[B, DifferentiableFunction[A, C]]] = ???
