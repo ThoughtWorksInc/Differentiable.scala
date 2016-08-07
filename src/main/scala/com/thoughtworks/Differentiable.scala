@@ -687,6 +687,143 @@ object Differentiable {
       }
     }
 
+
+    object PartiallyAppliedCurry22 {
+
+      final case class Difference[UpstreamDifference, BDifference]
+      (weightDifference: UpstreamDifference, inputDifference: BDifference)
+        extends Differences[BDifference, UpstreamDifference]
+
+    }
+
+    final case class PartiallyAppliedCurry22[A, B, R, F <: DifferentiableFunction.Aux[A :: B :: HNil, R, F, FDifference], FDifference, ADifference]
+    (f: F, a: Differentiable.Aux[_ <: A, ADifference])
+      extends DifferentiableFunction[B, R] with CacheFunction {
+      override type Difference = PartiallyAppliedCurry22.Difference[UpstreamDifference, ADifference]
+      override type Self = PartiallyAppliedCurry22[A, B, R, F, FDifference, ADifference]
+      override type UpstreamDifference = FDifference
+      override type InputDifference = ADifference
+
+      override implicit def patch: Patch[Self, Difference] = {
+        val upstreamPatch = f.patch
+        val aPatch = a.patch
+
+        new Patch[Self, Difference] {
+          override def applyPatch(weight: Self, patch: Difference, learningRate: Double): Self = {
+            new Self(
+              upstreamPatch.applyPatch(weight.f, patch.weightDifference, learningRate),
+              Differentiable(
+                aPatch.applyPatch(weight.a.self, patch.inputDifference, learningRate),
+                aPatch
+              )
+            )
+          }
+
+          override def empty: Difference = new Difference(upstreamPatch.empty, aPatch.empty)
+
+          override def combine(x: Difference, y: Difference): Difference = {
+            new Difference(
+              upstreamPatch.combine(x.weightDifference, y.weightDifference),
+              aPatch.combine(x.inputDifference, y.inputDifference)
+            )
+          }
+        }
+      }
+
+      override def forward[InputData <: B, BDifference](input: Differentiable.Aux[InputData, BDifference]): Cache.Aux[_ <: R, BDifference, Difference] = {
+
+        def forwardF[Output0 <: R, OutputDifference0](fCache: Cache {
+          type Output = Output0
+          type OutputDifference = OutputDifference0
+          type InputDifference <: ADifference :: BDifference :: HNil
+          type UpstreamDifference <: FDifference
+        }) = {
+          new Cache {
+            override type UpstreamDifference = Difference
+            override type InputDifference = BDifference
+            override type OutputDifference = OutputDifference0
+            override type Output = Output0
+
+            override def output: Differentiable.Aux[Output, OutputDifference] = fCache.output
+
+            override def backward(difference: OutputDifference) = {
+              val fDifference = fCache.backward(difference)
+
+              new Differences[InputDifference, UpstreamDifference] {
+                override def inputDifference: InputDifference = fDifference.inputDifference.tail.head
+
+                override def weightDifference: UpstreamDifference = {
+                  PartiallyAppliedCurry22.Difference(
+                    fDifference.weightDifference,
+                    fDifference.inputDifference.head
+                  )
+                }
+              }
+            }
+          }: Cache.Aux[Output0, BDifference, Difference]
+        }
+        val fCache = f.forward(
+          Differentiable(
+            a.self :: input.self :: HNil,
+            Patch.HConsPatch(a.patch, Patch.HConsPatch(input.patch, Patch.HNilPatch))
+          )
+        )
+        forwardF(fCache)
+      }
+
+      override def backward(difference: Difference) = difference
+
+    }
+
+
+    final case class PartiallyAppliedCurry21[A, B, R, F <: DifferentiableFunction.Aux[A :: B :: HNil, R, F, FDifference], FDifference](f: F)
+      extends DifferentiableFunction[A, DifferentiableFunction[B, R]] with CacheFunction {
+
+      override type Difference = FDifference
+      override type InputDifference = FDifference
+      override type UpstreamDifference = NeverChange.type
+
+      override type Self = PartiallyAppliedCurry21[A, B, R, F, FDifference]
+
+      override def backward(difference: Difference) = new Differences[InputDifference, UpstreamDifference] {
+        override def inputDifference: FDifference = difference
+
+        override def weightDifference = NeverChange
+      }
+
+      override implicit def patch: Patch[Self, Difference] = {
+        val underlyingPatch = f.patch
+        new IsoPatch[F, Self, FDifference] {
+          override protected def fromPatch: Patch[F, FDifference] = underlyingPatch
+
+          override protected def forward(from: F): Self = {
+            new Self(from)
+          }
+
+          override protected def backward(to: Self): F = {
+            to.f
+          }
+        }
+
+      }
+
+      override def forward[InputData <: A, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: DifferentiableFunction[B, R], InputDifference, Difference] = {
+        PartiallyAppliedCurry22[A, B, R, F, FDifference, InputDifference](f, input)
+      }
+    }
+
+    final case class Curry2[A, B, R]() extends DifferentiableFunction[DifferentiableFunction[A :: B :: HNil, R], DifferentiableFunction[A, DifferentiableFunction[B, R]]] {
+      override type Self = Curry2[A, B, R]
+      override type Difference = NeverChange.type
+
+      override implicit def patch: Patch[Self, Difference] = Patch.NeverChangePatch()
+
+      override def forward[InputData <: DifferentiableFunction[A :: B :: HNil, R], InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: DifferentiableFunction[A, DifferentiableFunction[B, R]], InputDifference, Difference] = {
+        val inputData = input.self
+        PartiallyAppliedCurry21[A, B, R, inputData.Self, inputData.Difference](inputData).unsafeCast
+      }
+    }
+
     object PartiallyAppliedCurry33 {
 
       final case class Difference[UpstreamDifference, BDifference]
@@ -909,6 +1046,10 @@ object Differentiable {
         * Curried version of [[cats.arrow.Compose#compose]].
         */
       override def compose[A, B, C] = Compose[A, B, C]()
+
+      override def curry2[A, B, R]: DifferentiableFunction[DifferentiableFunction[A :: B :: HNil, R], DifferentiableFunction[A, DifferentiableFunction[B, R]]] = {
+        Curry2[A, B, R]()
+      }
 
       override def curry3[A, B, C, R]: DifferentiableFunction[DifferentiableFunction[A :: B :: C :: HNil, R], DifferentiableFunction[A, DifferentiableFunction[B, DifferentiableFunction[C, R]]]] = {
         Curry3[A, B, C, R]()
