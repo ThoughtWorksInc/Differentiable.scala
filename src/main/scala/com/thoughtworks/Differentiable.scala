@@ -141,6 +141,20 @@ object Differentiable {
       override def empty = HNil
     }
 
+    object HConsPatch {
+
+      object OrNeverChange {
+        def unapply[Head, Tail <: HList](p: Patch[_ <: Head :: Tail, _]): Option[(Patch[Head, _], Patch[Tail, _])] = {
+          p match {
+            case NeverChangePatch() => Some((NeverChangePatch[Head, Any](), NeverChangePatch[Tail, Any]()))
+            case HConsPatch(head: Patch[Head, _], tail: Patch[Tail, _]) => Some((head, tail))
+            case _ => None
+          }
+        }
+      }
+
+    }
+
     final case class HConsPatch[Head, HeadDifference, Tail <: HList, TailDifference <: HList]
     (headPatch: Patch[Head, HeadDifference], tailPatch: Patch[Tail, TailDifference]) extends Patch[Head :: Tail, HeadDifference :: TailDifference] {
       override def applyPatch(weight: Head :: Tail, patch: HeadDifference :: TailDifference, learningRate: Double): Head :: Tail = {
@@ -1008,6 +1022,22 @@ object Differentiable {
       }
     }
 
+    final case class Flip[A, B, C]()
+      extends DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]] :: B :: A :: HNil, C] {
+      override type Self = Flip[A, B, C]
+      override type Difference = NeverChange.type
+
+      override implicit def patch: Patch[Self, Difference] = Patch.NeverChangePatch()
+
+      override def forward[InputData <: DifferentiableFunction[A, DifferentiableFunction[B, C]] :: B :: A :: HNil, InputDifference]
+      (input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: C, InputDifference, Difference] = {
+        input.patch match {
+          case Patch.HConsPatch.OrNeverChange(fPatch, Patch.HConsPatch.OrNeverChange(bPatch, Patch.HConsPatch.OrNeverChange(aPatch, _))) =>
+            ??? // TODO
+        }
+      }
+    }
+
     implicit object DifferentiableFunctionInstances extends ScalaPointfree[DifferentiableFunction] with cats.arrow.Split[DifferentiableFunction] with cats.arrow.Category[DifferentiableFunction] with cats.arrow.Choice[DifferentiableFunction] {
 
       override def compose[A, B, C](f: DifferentiableFunction[B, C], g: DifferentiableFunction[A, B]) = {
@@ -1055,7 +1085,9 @@ object Differentiable {
         Curry3[A, B, C, R]()
       }
 
-      override def flip[A, B, C]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[B, DifferentiableFunction[A, C]]] = ???
+      override def flip[A, B, C]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[B, DifferentiableFunction[A, C]]] = {
+        apply(curry3[DifferentiableFunction[A, DifferentiableFunction[B, C]], B, A, C], Flip[A, B, C]())
+      }
 
       //      override def arr[A, B](f: (A) => B) = Arr(f)
       //      override def first[A, B, C](fa: DifferentiableFunction[A, B]) = First[A, B, C, fa.Self](fa)
