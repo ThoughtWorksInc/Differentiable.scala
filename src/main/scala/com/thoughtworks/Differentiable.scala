@@ -3,8 +3,6 @@ package com.thoughtworks
 
 import cats._
 import cats.data.Xor
-import com.thoughtworks.Differentiable.{Aux, NeverChange}
-import com.thoughtworks.Differentiable.DifferentiableFunction.Cache.Aux
 import com.thoughtworks.Differentiable.Patch.{IsoPatch, PairPatch}
 import com.thoughtworks.Pointfree.ScalaPointfree
 import shapeless._
@@ -143,19 +141,22 @@ object Differentiable {
       override def empty = HNil
     }
 
-    implicit def hconsPatch[Head, HeadDifference, Tail <: HList, TailDifference <: HList]
-    (implicit headPatch: Patch[Head, HeadDifference], tailPatch: Patch[Tail, TailDifference]): Patch[Head :: Tail, HeadDifference :: TailDifference] = {
-      new Patch[Head :: Tail, HeadDifference :: TailDifference] {
-        override def applyPatch(weight: Head :: Tail, patch: HeadDifference :: TailDifference, learningRate: Double): Head :: Tail = {
-          headPatch.applyPatch(weight.head, patch.head, learningRate) :: tailPatch.applyPatch(weight.tail, patch.tail, learningRate)
-        }
-
-        override def combine(f1: HeadDifference :: TailDifference, f2: HeadDifference :: TailDifference): HeadDifference :: TailDifference = {
-          headPatch.combine(f1.head, f2.head) :: tailPatch.combine(f1.tail, f2.tail)
-        }
-
-        override def empty: HeadDifference :: TailDifference = headPatch.empty :: tailPatch.empty
+    final case class HConsPatch[Head, HeadDifference, Tail <: HList, TailDifference <: HList]
+    (headPatch: Patch[Head, HeadDifference], tailPatch: Patch[Tail, TailDifference]) extends Patch[Head :: Tail, HeadDifference :: TailDifference] {
+      override def applyPatch(weight: Head :: Tail, patch: HeadDifference :: TailDifference, learningRate: Double): Head :: Tail = {
+        headPatch.applyPatch(weight.head, patch.head, learningRate) :: tailPatch.applyPatch(weight.tail, patch.tail, learningRate)
       }
+
+      override def combine(f1: HeadDifference :: TailDifference, f2: HeadDifference :: TailDifference): HeadDifference :: TailDifference = {
+        headPatch.combine(f1.head, f2.head) :: tailPatch.combine(f1.tail, f2.tail)
+      }
+
+      override def empty: HeadDifference :: TailDifference = headPatch.empty :: tailPatch.empty
+    }
+
+    implicit def hconsPatch[Head, HeadDifference, Tail <: HList, TailDifference <: HList]
+    (implicit headPatch: Patch[Head, HeadDifference], tailPatch: Patch[Tail, TailDifference]) = {
+      HConsPatch[Head, HeadDifference, Tail, TailDifference](headPatch, tailPatch)
     }
 
     implicit def genericPatch[Data <: Product, Difference <: Product, DataList <: HList, DiffereceList <: HList]
@@ -301,7 +302,7 @@ object Differentiable {
       }
 
       override implicit def patch: Patch[Self, Difference] = {
-        Patch.genericPatch(Generic[Self], Generic[Difference], Patch.hconsPatch(f.patch, Patch.hconsPatch(g.patch, Patch.HNilPatch)))
+        Patch.genericPatch(Generic[Self], Generic[Difference], Patch.HConsPatch(f.patch, Patch.HConsPatch(g.patch, Patch.HNilPatch)))
       }
 
       override def backward(difference: Difference) = difference
@@ -487,7 +488,7 @@ object Differentiable {
       type Self = Split[A, B, C, D, F, FDifference, G, GDifference]
 
       override implicit def patch: Patch[Self, Difference] = {
-        Patch.genericPatch(Generic[Self], Generic[Difference], Patch.hconsPatch(f.patch, Patch.hconsPatch(g.patch, Patch.HNilPatch)))
+        Patch.genericPatch(Generic[Self], Generic[Difference], Patch.HConsPatch(f.patch, Patch.HConsPatch(g.patch, Patch.HNilPatch)))
       }
 
       override def forward[InputData <: (A, C), InputDifference0](input: Differentiable.Aux[InputData, InputDifference0]): Cache.Aux[_ <: (B, D), InputDifference0, Difference] = {
@@ -551,7 +552,7 @@ object Differentiable {
       type Difference = (FDifference, GDifference)
 
       override implicit def patch: Patch[Self, Difference] = {
-        Patch.genericPatch(Generic[Self], Generic[Difference], Patch.hconsPatch(f.patch, Patch.hconsPatch(g.patch, Patch.HNilPatch)))
+        Patch.genericPatch(Generic[Self], Generic[Difference], Patch.HConsPatch(f.patch, Patch.HConsPatch(g.patch, Patch.HNilPatch)))
       }
 
       override def forward[InputData <: A Xor B, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: C, InputDifference, Difference] = {
@@ -685,7 +686,142 @@ object Differentiable {
         PartiallyAppliedConstant(input).unsafeCast
       }
     }
-//    final case class PartiallyAppliedCurry32[A, B, C, R, F <: DifferentiableFunction.Aux[A :: B :: C :: HNil, R, F, FDifference], FDifference](f: F)
+
+    object PartiallyAppliedCurry33 {
+
+      final case class Difference[UpstreamDifference, BDifference]
+      (weightDifference: UpstreamDifference, inputDifference: BDifference)
+        extends Differences[BDifference, UpstreamDifference]
+
+    }
+
+    final case class PartiallyAppliedCurry33[A, B, C, R, F <: DifferentiableFunction.Aux[A :: B :: C :: HNil, R, F, FDifference], FDifference, ADifference, BDifference]
+    (upstream: PartiallyAppliedCurry32[A, B, C, R, F, FDifference, ADifference], b: Differentiable.Aux[_ <: B, BDifference])
+      extends DifferentiableFunction[C, R] with CacheFunction {
+      override type Difference = PartiallyAppliedCurry33.Difference[UpstreamDifference, BDifference]
+      override type Self = PartiallyAppliedCurry33[A, B, C, R, F, FDifference, ADifference, BDifference]
+      override type UpstreamDifference = PartiallyAppliedCurry32.Difference[FDifference, ADifference]
+      override type InputDifference = BDifference
+
+      override implicit def patch: Patch[Self, Difference] = {
+        val upstreamPatch = upstream.patch
+        val bPatch = b.patch
+
+        new Patch[Self, Difference] {
+          override def applyPatch(weight: Self, patch: Difference, learningRate: Double): Self = {
+            new Self(
+              upstreamPatch.applyPatch(weight.upstream, patch.weightDifference, learningRate),
+              Differentiable(
+                bPatch.applyPatch(weight.b.self, patch.inputDifference, learningRate),
+                bPatch
+              )
+            )
+          }
+
+          override def empty: Difference = new Difference(upstreamPatch.empty, bPatch.empty)
+
+          override def combine(x: Difference, y: Difference): Difference = {
+            new Difference(
+              upstreamPatch.combine(x.weightDifference, y.weightDifference),
+              bPatch.combine(x.inputDifference, y.inputDifference)
+            )
+          }
+        }
+      }
+
+      override def forward[InputData <: C, CDifference](input: Differentiable.Aux[InputData, CDifference]): Cache.Aux[_ <: R, CDifference, Difference] = {
+
+        def forwardF[Output0 <: R, OutputDifference0](fCache: Cache {
+          type Output = Output0
+          type OutputDifference = OutputDifference0
+          type InputDifference <: ADifference :: BDifference :: CDifference :: HNil
+          type UpstreamDifference <: FDifference
+        }) = {
+          new Cache {
+            override type UpstreamDifference = Difference
+            override type InputDifference = CDifference
+            override type OutputDifference = OutputDifference0
+            override type Output = Output0
+
+            override def output: Differentiable.Aux[Output, OutputDifference] = fCache.output
+
+            override def backward(difference: OutputDifference) = {
+              val fDifference = fCache.backward(difference)
+
+              new Differences[InputDifference, UpstreamDifference] {
+                override def inputDifference: InputDifference = fDifference.inputDifference.tail.tail.head
+
+                override def weightDifference: UpstreamDifference = {
+                  PartiallyAppliedCurry33.Difference(
+                    PartiallyAppliedCurry32.Difference(fDifference.weightDifference, fDifference.inputDifference.head),
+                    fDifference.inputDifference.tail.head
+                  )
+                }
+              }
+            }
+          }: Cache.Aux[Output0, CDifference, Difference]
+
+        }
+        val fCache = upstream.f.forward(
+          Differentiable(
+            upstream.a.self :: b.self :: input.self :: HNil,
+            Patch.HConsPatch(upstream.a.patch, Patch.HConsPatch(b.patch, Patch.HConsPatch(input.patch, Patch.HNilPatch)))
+          )
+        )
+        forwardF(fCache)
+      }
+
+      override def backward(difference: Difference) = difference
+
+    }
+
+    object PartiallyAppliedCurry32 {
+
+      final case class Difference[FDifference, ADifference]
+      (weightDifference: FDifference, inputDifference: ADifference)
+        extends Differences[ADifference, FDifference]
+
+    }
+
+    final case class PartiallyAppliedCurry32[A, B, C, R, F <: DifferentiableFunction.Aux[A :: B :: C :: HNil, R, F, FDifference], FDifference, ADifference]
+    (f: F, a: Differentiable.Aux[_ <: A, ADifference])
+      extends DifferentiableFunction[B, DifferentiableFunction[C, R]] with CacheFunction {
+      override type UpstreamDifference = FDifference
+      override type Difference = PartiallyAppliedCurry32.Difference[FDifference, ADifference]
+      override type InputDifference = ADifference
+      override type Self = PartiallyAppliedCurry32[A, B, C, R, F, FDifference, ADifference]
+
+      override implicit def patch: Patch[Self, Difference] = {
+        val fPatch = f.patch
+        val aPatch = a.patch
+        new Patch[Self, Difference] {
+          override def applyPatch(weight: Self, patch: Difference, learningRate: Double): Self = {
+            new Self(
+              fPatch.applyPatch(weight.f, patch.weightDifference, learningRate),
+              Differentiable(
+                aPatch.applyPatch(weight.a.self, patch.inputDifference, learningRate),
+                aPatch
+              )
+            )
+          }
+
+          override def empty: Difference = new Difference(fPatch.empty, aPatch.empty)
+
+          override def combine(x: Difference, y: Difference): Difference = {
+            new Difference(
+              fPatch.combine(x.weightDifference, y.weightDifference),
+              aPatch.combine(x.inputDifference, y.inputDifference)
+            )
+          }
+        }
+      }
+
+      override def forward[InputData <: B, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: DifferentiableFunction[C, R], InputDifference, Difference] = {
+        PartiallyAppliedCurry33[A, B, C, R, F, FDifference, ADifference, InputDifference](this, input)
+      }
+
+      override def backward(difference: Difference) = difference
+    }
 
     final case class PartiallyAppliedCurry31[A, B, C, R, F <: DifferentiableFunction.Aux[A :: B :: C :: HNil, R, F, FDifference], FDifference](f: F)
       extends DifferentiableFunction[A, DifferentiableFunction[B, DifferentiableFunction[C, R]]] with CacheFunction {
@@ -718,7 +854,9 @@ object Differentiable {
 
       }
 
-      override def forward[InputData <: A, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: DifferentiableFunction[B, DifferentiableFunction[C, R]], InputDifference, Difference] = ???
+      override def forward[InputData <: A, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: DifferentiableFunction[B, DifferentiableFunction[C, R]], InputDifference, Difference] = {
+        PartiallyAppliedCurry32[A, B, C, R, F, FDifference, InputDifference](f, input)
+      }
     }
 
     final case class Curry3[A, B, C, R]() extends DifferentiableFunction[DifferentiableFunction[A :: B :: C :: HNil, R], DifferentiableFunction[A, DifferentiableFunction[B, DifferentiableFunction[C, R]]]] {
@@ -809,17 +947,6 @@ object Differentiable {
       override def forward[InputData <: A, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: B, InputDifference, Difference] = ???
 
     }
-
-
-    //
-    //
-    //    def curry[=>: : scalaz.Split, A, B, C](f: (A, B) =>: C): A =>: B =>: C = {
-    //      DifferentiableFunctionInstances.empty
-    //      import scalaz.syntax.split._
-    //      Id[A]() -*- Id[B]()
-    //
-    //      ???
-    //    }
 
   }
 
