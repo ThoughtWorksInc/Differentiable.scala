@@ -619,7 +619,12 @@ object Differentiable {
       }.unsafeCast
     }
 
-    final case class PartiallyAppliedConstant[A, B, DifferenceB](b: Differentiable.Aux[B, DifferenceB]) extends DifferentiableFunction[A, B] {
+    final case class PartiallyAppliedConstant[A, B, DifferenceB](b: Differentiable.Aux[B, DifferenceB])
+      extends DifferentiableFunction[A, B] with CacheFunction {
+
+      override type UpstreamDifference = NeverChange.type
+
+      override type InputDifference = DifferenceB
 
       override type Self = PartiallyAppliedConstant[A, B, DifferenceB]
 
@@ -660,6 +665,12 @@ object Differentiable {
           }
         }
       }
+
+      override def backward(difference: DifferenceB) = new Differences[DifferenceB, NeverChange.type] {
+        override def inputDifference: DifferenceB = difference
+
+        override def weightDifference = NeverChange
+      }
     }
 
     final case class Constant[A, B]() extends DifferentiableFunction[B, DifferentiableFunction[A, B]] {
@@ -671,8 +682,7 @@ object Differentiable {
       override implicit def patch: Patch[Self, Difference] = Patch.NeverChangePatch()
 
       override def forward[InputData <: B, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: DifferentiableFunction[A, B], InputDifference, Difference] = {
-        ???
-
+        PartiallyAppliedConstant(input).unsafeCast
       }
     }
 
