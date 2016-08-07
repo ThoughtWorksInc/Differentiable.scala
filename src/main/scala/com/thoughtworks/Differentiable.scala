@@ -3,6 +3,8 @@ package com.thoughtworks
 
 import cats._
 import cats.data.Xor
+import com.thoughtworks.Differentiable.Aux
+import com.thoughtworks.Differentiable.DifferentiableFunction.Cache.Aux
 import com.thoughtworks.Differentiable.Patch.{IsoPatch, PairPatch}
 import com.thoughtworks.Pointfree.ScalaPointfree
 import shapeless._
@@ -674,6 +676,33 @@ object Differentiable {
       }
     }
 
+    final case class PartiallyAppliedCurry31[A, B, C, R, F <: DifferentiableFunction.Aux[A :: B :: C :: HNil, R, F, FDifference], FDifference](f: F)
+      extends DifferentiableFunction[A, DifferentiableFunction[B, DifferentiableFunction[C, R]]] with CacheFunction {
+
+      override type Difference = FDifference
+      override type InputDifference = FDifference
+      override type WeightDifference = NeverChange.type
+
+      override type Self = PartiallyAppliedCurry31[A, B, C, R, F, FDifference]
+
+      override def backward(difference: Difference): Differences[InputDifference, WeightDifference] = ???
+
+      override implicit def patch: Patch[Self, Difference] = ???
+
+      override def forward[InputData <: A, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: DifferentiableFunction[B, DifferentiableFunction[C, R]], InputDifference, Difference] = ???
+    }
+
+    final case class Curry3[A, B, C, R]() extends DifferentiableFunction[DifferentiableFunction[A :: B :: C :: HNil, R], DifferentiableFunction[A, DifferentiableFunction[B, DifferentiableFunction[C, R]]]] {
+      override type Self = Curry3[A, B, C, R]
+      override type Difference = NeverChange.type
+
+      override implicit def patch: Patch[Self, Difference] = Patch.NeverChangePatch()
+
+      override def forward[InputData <: DifferentiableFunction[A :: B :: C :: HNil, R], InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: DifferentiableFunction[A, DifferentiableFunction[B, DifferentiableFunction[C, R]]], InputDifference, Difference] = {
+        ???
+      }
+    }
+
     implicit object DifferentiableFunctionInstances extends ScalaPointfree[DifferentiableFunction] with cats.arrow.Split[DifferentiableFunction] with cats.arrow.Category[DifferentiableFunction] with cats.arrow.Choice[DifferentiableFunction] {
 
       override def compose[A, B, C](f: DifferentiableFunction[B, C], g: DifferentiableFunction[A, B]) = {
@@ -712,6 +741,10 @@ object Differentiable {
         * Curried version of [[cats.arrow.Compose#compose]].
         */
       override def compose[A, B, C] = Compose[A, B, C]()
+
+      override def curry3[A, B, C, R]: DifferentiableFunction[DifferentiableFunction[A :: B :: C :: HNil, R], DifferentiableFunction[A, DifferentiableFunction[B, DifferentiableFunction[C, R]]]] = {
+        super.curry3
+      }
 
       override def flip[A, B, C]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[B, DifferentiableFunction[A, C]]] = ???
 
