@@ -3,7 +3,7 @@ package com.thoughtworks
 
 import cats._
 import cats.data.Xor
-import com.thoughtworks.Differentiable.Aux
+import com.thoughtworks.Differentiable.{Aux, NeverChange}
 import com.thoughtworks.Differentiable.DifferentiableFunction.Cache.Aux
 import com.thoughtworks.Differentiable.Patch.{IsoPatch, PairPatch}
 import com.thoughtworks.Pointfree.ScalaPointfree
@@ -685,6 +685,7 @@ object Differentiable {
         PartiallyAppliedConstant(input).unsafeCast
       }
     }
+//    final case class PartiallyAppliedCurry32[A, B, C, R, F <: DifferentiableFunction.Aux[A :: B :: C :: HNil, R, F, FDifference], FDifference](f: F)
 
     final case class PartiallyAppliedCurry31[A, B, C, R, F <: DifferentiableFunction.Aux[A :: B :: C :: HNil, R, F, FDifference], FDifference](f: F)
       extends DifferentiableFunction[A, DifferentiableFunction[B, DifferentiableFunction[C, R]]] with CacheFunction {
@@ -695,9 +696,27 @@ object Differentiable {
 
       override type Self = PartiallyAppliedCurry31[A, B, C, R, F, FDifference]
 
-      override def backward(difference: Difference): Differences[InputDifference, UpstreamDifference] = ???
+      override def backward(difference: Difference) = new Differences[InputDifference, UpstreamDifference] {
+        override def inputDifference: FDifference = difference
 
-      override implicit def patch: Patch[Self, Difference] = ???
+        override def weightDifference = NeverChange
+      }
+
+      override implicit def patch: Patch[Self, Difference] = {
+        val underlyingPatch = f.patch
+        new IsoPatch[F, Self, FDifference] {
+          override protected def fromPatch: Patch[F, FDifference] = underlyingPatch
+
+          override protected def forward(from: F): PartiallyAppliedCurry31[A, B, C, R, F, FDifference] = {
+            new Self(from)
+          }
+
+          override protected def backward(to: PartiallyAppliedCurry31[A, B, C, R, F, FDifference]): F = {
+            to.f
+          }
+        }
+
+      }
 
       override def forward[InputData <: A, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: DifferentiableFunction[B, DifferentiableFunction[C, R]], InputDifference, Difference] = ???
     }
@@ -709,7 +728,8 @@ object Differentiable {
       override implicit def patch: Patch[Self, Difference] = Patch.NeverChangePatch()
 
       override def forward[InputData <: DifferentiableFunction[A :: B :: C :: HNil, R], InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: DifferentiableFunction[A, DifferentiableFunction[B, DifferentiableFunction[C, R]]], InputDifference, Difference] = {
-        ???
+        val inputData = input.self
+        PartiallyAppliedCurry31[A, B, C, R, inputData.Self, inputData.Difference](inputData).unsafeCast
       }
     }
 
