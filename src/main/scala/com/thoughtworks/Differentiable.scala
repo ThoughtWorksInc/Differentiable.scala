@@ -3,6 +3,7 @@ package com.thoughtworks
 
 import cats._
 import cats.data.Xor
+import com.thoughtworks.Differentiable.Aux
 import com.thoughtworks.Differentiable.Patch.{IsoPatch, PairPatch}
 import com.thoughtworks.Pointfree.ScalaPointfree
 import shapeless._
@@ -1024,7 +1025,7 @@ object Differentiable {
 
     final case class UncurriedFlip[A, B, C]()
       extends DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]] :: B :: A :: HNil, C] {
-      override type Self = Flip[A, B, C]
+      override type Self = UncurriedFlip[A, B, C]
       override type Difference = NeverChange.type
 
       override implicit def patch: Patch[Self, Difference] = Patch.NeverChangePatch()
@@ -1036,12 +1037,10 @@ object Differentiable {
             val b = input.self.tail.head
             val a = input.self.tail.tail.head
 
-            type GenericCache = Cache.Aux[_ <: C, _, NeverChange.type]
-
-            def forwardF[F <: DifferentiableFunction.Aux[A, DifferentiableFunction[B, C], F, FDifference], FDifference](f: F): GenericCache = {
-              def forwardA[ADifference, FA <: DifferentiableFunction[B, C]](cacheA: Cache.Aux[FA, ADifference, FDifference]): GenericCache = {
+            def forwardF[F <: DifferentiableFunction.Aux[A, DifferentiableFunction[B, C], F, FDifference], FDifference](f: F) = {
+              def forwardA[ADifference, FA <: DifferentiableFunction[B, C]](cacheA: Cache.Aux[FA, ADifference, FDifference]) = {
                 val fa = cacheA.output.self
-                def forwardB[BDifference](cacheB: Cache.Aux[_ <: C, BDifference, fa.Difference]): GenericCache = {
+                def forwardB[BDifference](cacheB: Cache.Aux[_ <: C, BDifference, fa.Difference]) = {
                   new Cache {
                     override type Output = cacheB.Output
                     override type InputDifference = FDifference :: BDifference :: ADifference :: HNil
@@ -1061,11 +1060,11 @@ object Differentiable {
                         override def weightDifference = NeverChange
                       }
                     }
-                  }: Cache.Aux[_ <: C, FDifference :: BDifference :: ADifference :: HNil, NeverChange.type]
+                  }
                 }
                 forwardB(fa.forward(Differentiable(b, bPatch)))
               }
-              forwardA(f.forward(Differentiable(a, aPatch))): GenericCache
+              forwardA(f.forward(Differentiable(a, aPatch)))
             }
             val f = input.self.head
             forwardF[f.Self, f.Difference](f).unsafeCast
@@ -1152,7 +1151,27 @@ object Differentiable {
 
       override implicit def patch = Patch.NeverChangePatch[Self, Difference]()
 
-      override def forward[InputData <: A, InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: B, InputDifference, Difference] = ???
+      override def forward[InputData <: A, ADifference](input: Differentiable.Aux[InputData, ADifference]): Cache.Aux[_ <: B, ADifference, Difference] = {
+
+        new Cache {
+
+          override type Output = B
+
+          override type UpstreamDifference = Difference
+
+          override type InputDifference = ADifference
+
+          //          override type OutputDifference = ???
+
+          override def output: Differentiable.Aux[Output, OutputDifference] = {
+            ???
+          }
+
+          override def backward(difference: OutputDifference): Differences[InputDifference, UpstreamDifference] = {
+            ???
+          }
+        }
+      }
 
     }
 
