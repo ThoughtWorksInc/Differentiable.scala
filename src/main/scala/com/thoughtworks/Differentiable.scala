@@ -4,7 +4,7 @@ package com.thoughtworks
 import cats._
 import cats.data.Xor
 import com.thoughtworks.Differentiable.Aux
-import com.thoughtworks.Differentiable.Patch.{IsoPatch, PairPatch}
+import com.thoughtworks.Differentiable.Patch.{IsoPatch, NeverChangePatch, PairPatch}
 import com.thoughtworks.Pointfree.ScalaPointfree
 import shapeless._
 
@@ -1101,18 +1101,18 @@ object Differentiable {
       override def to[T, Repr <: HList](generic: Generic.Aux[T, Repr]): DifferentiableFunction[T, Repr] = ???
 
       type Value[+A] = Differentiable.Aux[_ <: A, _]
-//
-//      override def apply[A, B, C](f: DifferentiableFunction[A, DifferentiableFunction[B, C]], a: A): DifferentiableFunction[B, C] = {
-//        f.forward(Differentiable(a, Patch.NeverChangePatch[A, Any]())).output.self
-//      }
 
-      override def liftHList[L <: HList](hList: L): Value[L] = ???
+      override def liftHList[L <: HList](hlist: L): Value[L] = {
+        Differentiable[L, Any](hlist, NeverChangePatch())
+      }
 
-      override def unliftHList[L <: HList](hList: Value[L]): L = ???
+      override def lift[A, B](f: DifferentiableFunction[A, B]): Value[DifferentiableFunction[A, B]] = {
+        f
+      }
 
-      override def lift[A, B](f: DifferentiableFunction[A, B]): Value[DifferentiableFunction[A, B]] = ???
-
-      override def unlift[A, B](f: Value[DifferentiableFunction[A, B]]): DifferentiableFunction[A, B] = ???
+      override def unlift[A, B](f: Value[DifferentiableFunction[A, B]]): DifferentiableFunction[A, B] = {
+        f.self
+      }
 
       override def apply[A, B](f: DifferentiableFunction[A, B], a: Value[A]): Value[B] = {
         f.forward(a).output
