@@ -1100,9 +1100,27 @@ object Differentiable {
 
       override def to[T, Repr <: HList](generic: Generic.Aux[T, Repr]): DifferentiableFunction[T, Repr] = ???
 
-      override def apply[A, B](f: DifferentiableFunction[A, B], a: A): B = {
-        f.forward(Differentiable(a, Patch.NeverChangePatch[A, Any]())).output.self
+      type Value[+A] = Differentiable.Aux[_ <: A, _]
+//
+//      override def apply[A, B, C](f: DifferentiableFunction[A, DifferentiableFunction[B, C]], a: A): DifferentiableFunction[B, C] = {
+//        f.forward(Differentiable(a, Patch.NeverChangePatch[A, Any]())).output.self
+//      }
+
+      override def liftHList[L <: HList](hList: L): Value[L] = ???
+
+      override def unliftHList[L <: HList](hList: Value[L]): L = ???
+
+      override def lift[A, B](f: DifferentiableFunction[A, B]): Value[DifferentiableFunction[A, B]] = ???
+
+      override def unlift[A, B](f: Value[DifferentiableFunction[A, B]]): DifferentiableFunction[A, B] = ???
+
+      override def apply[A, B](f: DifferentiableFunction[A, B], a: Value[A]): Value[B] = {
+        f.forward(a).output
       }
+
+      override def substitute[A, B, C]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[DifferentiableFunction[A, B], DifferentiableFunction[A, C]]] = ???
+
+      override def duplicate[A, B]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[A, B]], DifferentiableFunction[A, B]] = ???
 
       override def constant[A, B] = Constant[A, B]()
 
@@ -1120,7 +1138,9 @@ object Differentiable {
       }
 
       override def flip[A, B, C]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[B, DifferentiableFunction[A, C]]] = {
-        apply(curry3[DifferentiableFunction[A, DifferentiableFunction[B, C]], B, A, C], UncurriedFlip[A, B, C]())
+        implicit def self = this
+        import Pointfree._
+        curry3[DifferentiableFunction[A, DifferentiableFunction[B, C]], B, A, C](UncurriedFlip[A, B, C]())
       }
 
       //      override def arr[A, B](f: (A) => B) = Arr(f)
