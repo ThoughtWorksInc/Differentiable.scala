@@ -1022,7 +1022,7 @@ object Differentiable {
       }
     }
 
-    final case class Flip[A, B, C]()
+    final case class UncurriedFlip[A, B, C]()
       extends DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]] :: B :: A :: HNil, C] {
       override type Self = Flip[A, B, C]
       override type Difference = NeverChange.type
@@ -1041,7 +1041,7 @@ object Differentiable {
             def forwardF[F <: DifferentiableFunction.Aux[A, DifferentiableFunction[B, C], F, FDifference], FDifference](f: F): GenericCache = {
               def forwardA[ADifference, FA <: DifferentiableFunction[B, C]](cacheA: Cache.Aux[FA, ADifference, FDifference]): GenericCache = {
                 val fa = cacheA.output.self
-                def forwardB[BDifference](cacheB: Cache.Aux[_ <: C, BDifference, cacheA.OutputDifference]): GenericCache = {
+                def forwardB[BDifference](cacheB: Cache.Aux[_ <: C, BDifference, fa.Difference]): GenericCache = {
                   new Cache {
                     override type Output = cacheB.Output
                     override type InputDifference = FDifference :: BDifference :: ADifference :: HNil
@@ -1121,7 +1121,7 @@ object Differentiable {
       }
 
       override def flip[A, B, C]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[B, DifferentiableFunction[A, C]]] = {
-        apply(curry3[DifferentiableFunction[A, DifferentiableFunction[B, C]], B, A, C], Flip[A, B, C]())
+        apply(curry3[DifferentiableFunction[A, DifferentiableFunction[B, C]], B, A, C], UncurriedFlip[A, B, C]())
       }
 
       //      override def arr[A, B](f: (A) => B) = Arr(f)
