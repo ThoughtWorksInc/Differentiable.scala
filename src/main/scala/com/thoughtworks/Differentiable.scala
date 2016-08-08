@@ -1029,11 +1029,46 @@ object Differentiable {
 
       override implicit def patch: Patch[Self, Difference] = Patch.NeverChangePatch()
 
-      override def forward[InputData <: DifferentiableFunction[A, DifferentiableFunction[B, C]] :: B :: A :: HNil, InputDifference]
-      (input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: C, InputDifference, Difference] = {
+      override def forward[InputData <: DifferentiableFunction[A, DifferentiableFunction[B, C]] :: B :: A :: HNil, HListDifference]
+      (input: Differentiable.Aux[InputData, HListDifference]): Cache.Aux[_ <: C, HListDifference, Difference] = {
         input.patch match {
-          case Patch.HConsPatch.OrNeverChange(fPatch, Patch.HConsPatch.OrNeverChange(bPatch, Patch.HConsPatch.OrNeverChange(aPatch, _))) =>
-            ??? // TODO
+          case hlistPatch@Patch.HConsPatch.OrNeverChange(fPatch, Patch.HConsPatch.OrNeverChange(bPatch, Patch.HConsPatch.OrNeverChange(aPatch, _))) =>
+            val b = input.self.tail.head
+            val a = input.self.tail.tail.head
+
+            type GenericCache = Cache.Aux[_ <: C, _, NeverChange.type]
+
+            def forwardF[F <: DifferentiableFunction.Aux[A, DifferentiableFunction[B, C], F, FDifference], FDifference](f: F): GenericCache = {
+              def forwardA[ADifference, FA <: DifferentiableFunction[B, C]](cacheA: Cache.Aux[FA, ADifference, FDifference]): GenericCache = {
+                val fa = cacheA.output.self
+                def forwardB[BDifference](cacheB: Cache.Aux[_ <: C, BDifference, cacheA.OutputDifference]): GenericCache = {
+                  new Cache {
+                    override type Output = cacheB.Output
+                    override type InputDifference = FDifference :: BDifference :: ADifference :: HNil
+                    override type OutputDifference = cacheB.OutputDifference
+                    override type UpstreamDifference = Difference
+
+                    override def output: Differentiable.Aux[Output, OutputDifference] = cacheB.output
+
+                    override def backward(difference: OutputDifference) = {
+                      val differencesB = cacheB.backward(difference)
+                      val differencesA = cacheA.backward(differencesB.weightDifference.asInstanceOf[cacheA.OutputDifference])
+                      new Differences[InputDifference, UpstreamDifference] {
+                        override def inputDifference: InputDifference = {
+                          differencesA.weightDifference :: differencesB.inputDifference :: differencesA.inputDifference :: HNil
+                        }
+
+                        override def weightDifference = NeverChange
+                      }
+                    }
+                  }: Cache.Aux[_ <: C, FDifference :: BDifference :: ADifference :: HNil, NeverChange.type]
+                }
+                forwardB(fa.forward(Differentiable(b, bPatch)))
+              }
+              forwardA(f.forward(Differentiable(a, aPatch))): GenericCache
+            }
+            val f = input.self.head
+            forwardF[f.Self, f.Difference](f).unsafeCast
         }
       }
     }
