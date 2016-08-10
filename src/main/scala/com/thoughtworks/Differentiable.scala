@@ -1100,6 +1100,57 @@ object Differentiable {
       }.unsafeCast
     }
 
+    final case class UncurriedSubstitute[A, B, C]()
+      extends DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]] :: DifferentiableFunction[A, B] :: A :: HNil, C] {
+      override type Self = UncurriedSubstitute[A, B, C]
+      override type Difference = NeverChange.type
+
+      override implicit def patch: Patch[Self, Difference] = Patch.NeverChangePatch()
+
+      override def forward[InputData <: DifferentiableFunction[A, DifferentiableFunction[B, C]] :: DifferentiableFunction[A, B] :: A :: HNil, HListDifference]
+      (input: Differentiable.Aux[InputData, HListDifference]): Cache.Aux[_ <: C, HListDifference, Difference] = {
+        input.patch match {
+          case hlistPatch@Patch.HConsPatch.OrNeverChange(fPatch, Patch.HConsPatch.OrNeverChange(gPatch, Patch.HConsPatch.OrNeverChange(aPatch, _))) =>
+            val a = input.self.tail.tail.head
+
+            def forwardFG[F <: DifferentiableFunction.Aux[A, DifferentiableFunction[B, C], F, FDifference], FDifference, G <: DifferentiableFunction.Aux[A, B, G, GDifference], GDifference](f: F, g: G) = {
+              def forwardA[AData <: A, ADifference](differentiableA: Differentiable.Aux[AData, ADifference]) = {
+                val cacheF = f.forward(differentiableA)
+                val cacheG = g.forward(differentiableA)
+                val bc = cacheF.output
+                val differentiableB = cacheG.output
+                val cacheBC = bc.self.forward(differentiableB)
+                new Cache {
+                  override type Output = cacheBC.Output
+                  override type OutputDifference = cacheBC.OutputDifference
+                  override type InputDifference = FDifference :: GDifference :: ADifference :: HNil
+                  override type UpstreamDifference = Difference
+
+                  override def output: Differentiable.Aux[Output, OutputDifference] = cacheBC.output
+
+                  override def backward(difference: OutputDifference) = {
+                    val differencesBC = cacheBC.backward(difference)
+                    val differencesG = cacheG.backward(differencesBC.inputDifference)
+                    val differencesF = cacheF.backward(differencesBC.weightDifference.asInstanceOf[cacheF.OutputDifference])
+                    new Differences[InputDifference, UpstreamDifference] {
+                      override def inputDifference: InputDifference = {
+                        differencesF.weightDifference :: differencesG.weightDifference :: differentiableA.patch.combine(differencesF.inputDifference, differencesG.inputDifference) :: HNil
+                      }
+
+                      override def weightDifference = NeverChange
+                    }
+                  }
+                }
+              }
+              forwardA(Differentiable(a, aPatch))
+            }
+            val f = input.self.head
+            val g = input.self.tail.head
+            forwardFG[f.Self, f.Difference, g.Self, g.Difference](f, g).unsafeCast
+        }
+      }
+    }
+
     final case class UncurriedFlip[A, B, C]()
       extends DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]] :: B :: A :: HNil, C] {
       override type Self = UncurriedFlip[A, B, C]
@@ -1195,7 +1246,10 @@ object Differentiable {
         f.forward(a).output
       }
 
-      override def substitute[A, B, C]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[DifferentiableFunction[A, B], DifferentiableFunction[A, C]]] = ???
+      override def substitute[A, B, C]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[DifferentiableFunction[A, B], DifferentiableFunction[A, C]]] = {
+        import Pointfree._
+        curry3[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[A, B], A, C](UncurriedSubstitute[A, B, C]())
+      }
 
       override def duplicate[A, B]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[A, B]], DifferentiableFunction[A, B]] = {
         import Pointfree._
