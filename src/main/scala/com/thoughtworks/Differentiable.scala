@@ -56,9 +56,7 @@ object Differentiable {
 
   object Patch {
 
-    type PatchOf[Data] = Patch[Data, _]
-
-    final case class ProductPatch[Data](fieldPatches: Lens[Data, ?] ~> PatchOf) extends Patch[Data, HashMap[Lens[Data, _], _]] {
+    final case class ProductPatch[Data](fieldPatches: Lens[Data, ?] ~> Lambda[A => Patch[A, _]]) extends Patch[Data, HashMap[Lens[Data, _], _]] {
       override def applyPatch(weight: Data, patch: HashMap[Lens[Data, _], _], learningRate: Double): Data = {
         patch.foldLeft(weight) { (weight, kv) =>
           val (lens, fieldDifference) = kv
@@ -86,7 +84,7 @@ object Differentiable {
         }
       }
     }
-    
+
     final case class LeftPatch[Data, Difference](leftPatch: Patch[Data, Difference]) extends Patch[Xor.Left[Data], Difference] {
       override def applyPatch(weight: Xor.Left[Data], patch: Difference, learningRate: Double): Xor.Left[Data] = {
         Xor.Left(leftPatch.applyPatch(weight.a, patch, learningRate))
@@ -1054,6 +1052,54 @@ object Differentiable {
       }
     }
 
+    final case class UncurriedDuplicate[A, B]()
+      extends DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[A, B]] :: A :: HNil, B] {
+      override type Self = UncurriedDuplicate[A, B]
+      override type Difference = NeverChange.type
+
+      override implicit def patch: Patch[Self, Difference] = Patch.NeverChangePatch()
+
+      override def forward[InputData <: ::[DifferentiableFunction[A, DifferentiableFunction[A, B]], ::[A, HNil]], InputDifference](input: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: B, InputDifference, Difference] = {
+        input.patch match {
+          case hlistPatch@Patch.HConsPatch.OrNeverChange(fPatch, Patch.HConsPatch.OrNeverChange(aPatch, _)) =>
+
+            def forwardF[F <: DifferentiableFunction.Aux[A, DifferentiableFunction[A, B], F, FDifference], FDifference](f: F) = {
+
+              def forwardAPatch[AData <: A, ADifference](differentiableA: Differentiable.Aux[AData, ADifference]) = {
+                val cache1 = f.forward(differentiableA)
+                val fa = cache1.output.self
+                val cache2 = fa.forward(differentiableA)
+                new Cache {
+                  override type Output = cache2.Output
+                  override type InputDifference = FDifference :: ADifference :: HNil
+                  override type OutputDifference = cache2.OutputDifference
+                  override type UpstreamDifference = Difference
+
+                  override def output: Differentiable.Aux[Output, OutputDifference] = cache2.output
+
+                  override def backward(difference: OutputDifference) = {
+                    val differences2 = cache2.backward(difference)
+                    val differences1 = cache1.backward(differences2.weightDifference.asInstanceOf[cache1.OutputDifference])
+
+                    new Differences[InputDifference, UpstreamDifference] {
+                      override def inputDifference: InputDifference = {
+                        differences1.weightDifference :: differentiableA.patch.combine(differences1.inputDifference, differences2.inputDifference) :: HNil
+                      }
+
+                      override def weightDifference = NeverChange
+                    }
+
+                  }
+                }
+              }
+              forwardAPatch(Differentiable(input.self.tail.head, aPatch))
+            }
+            val f = input.self.head
+            forwardF[f.Self, f.Difference](f)
+        }
+      }.unsafeCast
+    }
+
     final case class UncurriedFlip[A, B, C]()
       extends DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]] :: B :: A :: HNil, C] {
       override type Self = UncurriedFlip[A, B, C]
@@ -1151,7 +1197,10 @@ object Differentiable {
 
       override def substitute[A, B, C]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[DifferentiableFunction[A, B], DifferentiableFunction[A, C]]] = ???
 
-      override def duplicate[A, B]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[A, B]], DifferentiableFunction[A, B]] = ???
+      override def duplicate[A, B]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[A, B]], DifferentiableFunction[A, B]] = {
+        import Pointfree._
+        curry2[DifferentiableFunction[A, DifferentiableFunction[A, B]], A, B](UncurriedDuplicate[A, B]())
+      }
 
       override def constant[A, B] = Constant[A, B]()
 
