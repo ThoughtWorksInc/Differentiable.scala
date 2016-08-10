@@ -2,29 +2,19 @@ package com.thoughtworks
 
 import cats.kernel.std.tuple._
 import cats._
-import com.thoughtworks.Differentiable.Patch.{Aux, PurePatch}
 import shapeless._
 
 import scala.language.existentials
 import scala.language.higherKinds
 
-final case class Differentiable[+A, Data, Difference](data: Data, typeClasses: Differentiable.Patch.Aux[A, Data, Difference])
+trait Differentiable[+A] {
+  type Data
+  type Difference
 
-//{
-//
-//  import Differentiable._
-//
-//  type Data
-//
-//  type Difference
-//
-//  def data: Data
-//
-//  def differenceMonoid: Monoid[Difference]
-//
-//  def patch: Patch[Data, Difference]
-//
-//}
+  def apply(data: Data, difference: Difference, learningRate: Double): Data
+
+  def differenceMonoid: Monoid[Difference]
+}
 
 object Differentiable {
 
@@ -32,70 +22,58 @@ object Differentiable {
 
   case object NeverChange
 
-  trait Patch[+A] {
-    type Data
-    type Difference
-
-    def apply(data: Data, difference: Difference, learningRate: Double): Data
-
-    def differenceMonoid: Monoid[Difference]
+  type Aux[+A, Data0, Difference0] = Differentiable[A] {
+    type Data = Data0
+    type Difference = Difference0
   }
 
-  object Patch {
-    type Aux[+A, Data0, Difference0] = Patch[A] {
-      type Data = Data0
-      type Difference = Difference0
-    }
+  trait PureDifferentiable extends Monoid[NeverChange.type] {
+    _: Differentiable[_] =>
+    type Data = NoWeight.type
+    type Difference = NeverChange.type
 
-    trait PurePatch extends Monoid[NeverChange.type] {
-      _: Patch[_] =>
-      type Data = NoWeight.type
-      type Difference = NeverChange.type
+    override def apply(data: NoWeight.type, difference: NeverChange.type, learningRate: Double) = NoWeight
 
-      override def apply(data: NoWeight.type, difference: NeverChange.type, learningRate: Double) = NoWeight
+    override def differenceMonoid = this
 
-      override def differenceMonoid = this
+    override def empty = NeverChange
 
-      override def empty = NeverChange
-
-      override def combine(x: NeverChange.type, y: NeverChange.type) = NeverChange
-
-    }
+    override def combine(x: NeverChange.type, y: NeverChange.type) = NeverChange
 
   }
 
-  object FunctionPatch {
+  object DifferentiableFunction {
 
-    final case class Substitute[A, B, C]() extends FunctionPatch[A => B => C, (A => B) => A => C] with PurePatch {
+    final case class Substitute[A, B, C]() extends DifferentiableFunction[A => B => C, (A => B) => A => C] with PureDifferentiable {
 
-      override def forward[FWeight, FDifference](pureWeight: Data, fWeight: FWeight)(implicit fPatch: Patch.Aux[A => B => C, FWeight, FDifference]): Cache.Aux[(A => B) => A => C, Difference, FDifference] = {
-        val outputPatch = new FunctionPatch[A => B, A => C] {
+      override def forward[FWeight, FDifference](pureWeight: Data, fWeight: FWeight)(implicit fDifferentiable: Differentiable.Aux[A => B => C, FWeight, FDifference]): Cache.Aux[(A => B) => A => C, Difference, FDifference] = {
+        val outputDifferentiable = new DifferentiableFunction[A => B, A => C] {
 
           override type Data = FWeight
 
           override type Difference = FDifference
 
-          override def forward[GWeight, GDifference](fWeight: Data, gWeight: GWeight)(implicit gPatch: Patch.Aux[(A) => B, GWeight, GDifference]): Cache.Aux[A => C, Difference, GDifference] = {
+          override def forward[GWeight, GDifference](fWeight: Data, gWeight: GWeight)(implicit gDifferentiable: Differentiable.Aux[(A) => B, GWeight, GDifference]): Cache.Aux[A => C, Difference, GDifference] = {
 
             type OutputDifference = (FDifference, GDifference)
             type OutputData = (FWeight, GWeight)
-            val outputPatch: Patch.Aux[A => C, OutputData, OutputDifference] = new FunctionPatch[A, C] {
+            val outputDifferentiable: Differentiable.Aux[A => C, OutputData, OutputDifference] = new DifferentiableFunction[A, C] {
               override type Data = (FWeight, GWeight)
               override type Difference = (FDifference, GDifference)
 
               override def forward[AData, ADifference]
               (weight: Data, aData: AData)
-              (implicit aPatch: Patch.Aux[A, AData, ADifference]): Cache.Aux[C, Difference, ADifference] = {
-                (fPatch, gPatch) match {
-                  case (f: FunctionPatch[A, B => C], g: FunctionPatch[A, B]) =>
-                    val fCache = f.forward(fWeight, aData)(aPatch)
-                    val gCache = g.forward(gWeight, aData)(aPatch)
+              (implicit aDifferentiable: Differentiable.Aux[A, AData, ADifference]): Cache.Aux[C, Difference, ADifference] = {
+                (fDifferentiable, gDifferentiable) match {
+                  case (f: DifferentiableFunction[A, B => C], g: DifferentiableFunction[A, B]) =>
+                    val fCache = f.forward(fWeight, aData)(aDifferentiable)
+                    val gCache = g.forward(gWeight, aData)(aDifferentiable)
 
-                    fCache.outputPatch match {
-                      case bToC: FunctionPatch[B, C] =>
-                        val cCache = bToC.forward(fCache.output, gCache.output)(gCache.outputPatch)
+                    fCache.outputDifferentiable match {
+                      case bToC: DifferentiableFunction[B, C] =>
+                        val cCache = bToC.forward(fCache.output, gCache.output)(gCache.outputDifferentiable)
 
-                        new AbstractCache(cCache.outputPatch) {
+                        new AbstractCache(cCache.outputDifferentiable) {
 
                           override type WeightDifference = (FDifference, GDifference)
                           override type InputDifference = ADifference
@@ -110,7 +88,7 @@ object Differentiable {
                             new Differences[WeightDifference, InputDifference] {
                               override def weightDifference: (FDifference, GDifference) = (fDifferences.weightDifference, gDifferences.weightDifference)
 
-                              override def inputDifference: InputDifference = aPatch.differenceMonoid.combine(fDifferences.inputDifference, gDifferences.inputDifference)
+                              override def inputDifference: InputDifference = aDifferentiable.differenceMonoid.combine(fDifferences.inputDifference, gDifferences.inputDifference)
                             }
                           }
                         }
@@ -119,14 +97,14 @@ object Differentiable {
               }
 
               override def apply(data: (FWeight, GWeight), difference: (FDifference, GDifference), learningRate: Double): Data = {
-                fPatch.apply(data._1, difference._1, learningRate) -> gPatch.apply(data._2, difference._2, learningRate)
+                fDifferentiable.apply(data._1, difference._1, learningRate) -> gDifferentiable.apply(data._2, difference._2, learningRate)
               }
 
               override def differenceMonoid: Monoid[Difference] = {
-                tuple2Monoid(fPatch.differenceMonoid, gPatch.differenceMonoid)
+                tuple2Monoid(fDifferentiable.differenceMonoid, gDifferentiable.differenceMonoid)
               }
             }
-            new AbstractCache(outputPatch) {
+            new AbstractCache(outputDifferentiable) {
 
               override type WeightDifference = FDifference
               override type InputDifference = GDifference
@@ -145,19 +123,19 @@ object Differentiable {
           }
 
           override def apply(data: FWeight, difference: FDifference, learningRate: Double): Data = {
-            fPatch.apply(data, difference, learningRate)
+            fDifferentiable.apply(data, difference, learningRate)
           }
 
-          override def differenceMonoid: Monoid[Difference] = fPatch.differenceMonoid
+          override def differenceMonoid: Monoid[Difference] = fDifferentiable.differenceMonoid
         }
-        new AbstractCache(outputPatch) {
+        new AbstractCache(outputDifferentiable) {
           override type WeightDifference = NeverChange.type
           override type InputDifference = FDifference
 
           override def output: OutputData = fWeight
 
           override def backward(outputDifference: OutputDifference): Differences[WeightDifference, InputDifference] = {
-            new  Differences[WeightDifference, InputDifference] {
+            new Differences[WeightDifference, InputDifference] {
               override def weightDifference = NeverChange
 
               override def inputDifference = outputDifference
@@ -183,7 +161,7 @@ object Differentiable {
 
       def output: OutputData
 
-      implicit def outputPatch: Patch.Aux[Output, OutputData, OutputDifference]
+      implicit def outputDifferentiable: Differentiable.Aux[Output, OutputData, OutputDifference]
 
       def backward(outputDifference: OutputDifference): Differences[WeightDifference, InputDifference]
 
@@ -198,14 +176,14 @@ object Differentiable {
 
   }
 
-  trait FunctionPatch[-Input, +Output] extends Patch[Input => Output] {
+  trait DifferentiableFunction[-Input, +Output] extends Differentiable[Input => Output] {
 
-    abstract class AbstractCache[OutputData0, OutputDifference0](override val outputPatch: Patch.Aux[Output, OutputData0, OutputDifference0]) extends FunctionPatch.Cache[Output] {
+    protected abstract class AbstractCache[OutputData0, OutputDifference0](override val outputDifferentiable: Differentiable.Aux[Output, OutputData0, OutputDifference0]) extends DifferentiableFunction.Cache[Output] {
       override type OutputData = OutputData0
       override type OutputDifference = OutputDifference0
     }
 
-    def forward[InputData, InputDifference](weight: Data, input: InputData)(implicit inputPatch: Patch.Aux[Input, InputData, InputDifference]): FunctionPatch.Cache.Aux[Output, Difference, InputDifference]
+    def forward[InputData, InputDifference](weight: Data, input: InputData)(implicit inputDifferentiable: Differentiable.Aux[Input, InputData, InputDifference]): DifferentiableFunction.Cache.Aux[Output, Difference, InputDifference]
 
   }
 
@@ -1518,8 +1496,11 @@ object Differentiable {
   //      }
   //    }
   //
+  final case class DifferentiableOps[+A, Data, Difference](data: Data, typeClasses: Differentiable.Aux[A, Data, Difference])
 
-  implicit object DifferentiableFunctionInstances extends Pointfree[Lambda[A => Differentiable[A, _, _]]] {
+  type Ast[+A] = DifferentiableOps[A, _, _]
+
+  implicit object AstInstances extends Pointfree[Ast] {
 
 
     //      override def compose[A, B, C](f: DifferentiableFunction[B, C], g: DifferentiableFunction[A, B]) = {
@@ -1600,31 +1581,31 @@ object Differentiable {
     //      //      override def first[A, B, C](fa: DifferentiableFunction[A, B]) = First[A, B, C, fa.Self](fa)
     //
     //      // TODO: Override methods in Arrow
-    override def substitute[A, B, C] = Differentiable(NoWeight, FunctionPatch.Substitute[A, B, C]())
+    override def substitute[A, B, C] = DifferentiableOps(NoWeight, DifferentiableFunction.Substitute[A, B, C]())
 
-    override def id[A]: Differentiable[A => A, _, _] = ???
+    override def id[A]: DifferentiableOps[A => A, _, _] = ???
 
-    override def ap[A, B](ff: Differentiable[A => B, _, _])(fa: Differentiable[A, _, _]): Differentiable[B, _, _] = ???
+    override def ap[A, B](ff: DifferentiableOps[A => B, _, _])(fa: DifferentiableOps[A, _, _]): DifferentiableOps[B, _, _] = ???
 
-    override def hcons[Head, Tail <: HList]: Differentiable[(Head) => (Tail) => ::[Head, Tail], _, _] = ???
+    override def hcons[Head, Tail <: HList]: DifferentiableOps[(Head) => (Tail) => ::[Head, Tail], _, _] = ???
 
-    override def head[Head, Tail <: HList]: Differentiable[(::[Head, Tail]) => Head, _, _] = ???
+    override def head[Head, Tail <: HList]: DifferentiableOps[(::[Head, Tail]) => Head, _, _] = ???
 
-    override def tail[Head, Tail <: HList]: Differentiable[(::[Head, Tail]) => Tail, _, _] = ???
+    override def tail[Head, Tail <: HList]: DifferentiableOps[(::[Head, Tail]) => Tail, _, _] = ???
 
-    override def select[S, A](lens: Lens[S, A]): Differentiable[S => A, _, _] = ???
+    override def select[S, A](lens: Lens[S, A]): DifferentiableOps[S => A, _, _] = ???
 
-    override def from[T, Repr <: HList](generic: Generic.Aux[T, Repr]): Differentiable[(Repr) => T, _, _] = ???
+    override def from[T, Repr <: HList](generic: Generic.Aux[T, Repr]): DifferentiableOps[(Repr) => T, _, _] = ???
 
-    override def to[T, Repr <: HList](generic: Generic.Aux[T, Repr]): Differentiable[T => Repr, _, _] = ???
+    override def to[T, Repr <: HList](generic: Generic.Aux[T, Repr]): DifferentiableOps[T => Repr, _, _] = ???
 
-    override def compose[A, B, C]: Differentiable[(B => C) => (A => B) => A => C, _, _] = ???
+    override def compose[A, B, C]: DifferentiableOps[(B => C) => (A => B) => A => C, _, _] = ???
 
-    override def flip[A, B, C]: Differentiable[(A => B => C) => B => A => C, _, _] = ???
+    override def flip[A, B, C]: DifferentiableOps[(A => B => C) => B => A => C, _, _] = ???
 
-    override def duplicate[A, B]: Differentiable[(A => A => B) => A => B, _, _] = ???
+    override def duplicate[A, B]: DifferentiableOps[(A => A => B) => A => B, _, _] = ???
 
-    override def constant[A, B]: Differentiable[B => A => B, _, _] = ???
+    override def constant[A, B]: DifferentiableOps[B => A => B, _, _] = ???
   }
 
   //
