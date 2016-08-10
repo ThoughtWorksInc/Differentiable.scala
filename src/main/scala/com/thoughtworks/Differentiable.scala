@@ -3,11 +3,11 @@ package com.thoughtworks
 
 import cats._
 import cats.data.Xor
-import com.thoughtworks.Differentiable.Aux
 import com.thoughtworks.Differentiable.Patch.{IsoPatch, NeverChangePatch, PairPatch}
 import com.thoughtworks.Pointfree.ScalaPointfree
 import shapeless._
 
+import scala.collection.immutable.HashMap
 import scala.language.existentials
 import scala.language.higherKinds
 
@@ -56,6 +56,37 @@ object Differentiable {
 
   object Patch {
 
+    type PatchOf[Data] = Patch[Data, _]
+
+    final case class ProductPatch[Data](fieldPatches: Lens[Data, ?] ~> PatchOf) extends Patch[Data, HashMap[Lens[Data, _], _]] {
+      override def applyPatch(weight: Data, patch: HashMap[Lens[Data, _], _], learningRate: Double): Data = {
+        patch.foldLeft(weight) { (weight, kv) =>
+          val (lens, fieldDifference) = kv
+          lens.modify(weight) { field =>
+            def modifyField[FieldData](field: FieldData): FieldData = {
+              def applyPatchToField[FieldData1, FieldDifference](fieldPatch: Patch[FieldData1, FieldDifference]) = {
+                fieldPatch.applyPatch(field.asInstanceOf[FieldData1], fieldDifference.asInstanceOf[FieldDifference], learningRate)
+              }
+              applyPatchToField(fieldPatches(lens)).asInstanceOf[FieldData]
+            }
+            modifyField(field)
+          }
+        }
+      }
+
+      override def empty = HashMap()
+
+      override def combine(x: HashMap[Lens[Data, _], _], y: HashMap[Lens[Data, _], _]): HashMap[Lens[Data, _], _] = {
+        x.merged(y) {
+          case ((k, v1), (_, v2)) =>
+            def combineField[FieldData, FieldDifference](fieldPatch: Patch[FieldData, FieldDifference]) = {
+              fieldPatch.combine(v1.asInstanceOf[FieldDifference], v2.asInstanceOf[FieldDifference])
+            }
+            k -> combineField(fieldPatches(k))
+        }
+      }
+    }
+    
     final case class LeftPatch[Data, Difference](leftPatch: Patch[Data, Difference]) extends Patch[Xor.Left[Data], Difference] {
       override def applyPatch(weight: Xor.Left[Data], patch: Difference, learningRate: Double): Xor.Left[Data] = {
         Xor.Left(leftPatch.applyPatch(weight.a, patch, learningRate))
@@ -1094,7 +1125,7 @@ object Differentiable {
 
       override def tail[Head, Tail <: HList]: DifferentiableFunction[::[Head, Tail], Tail] = ???
 
-      override def select[S, A](lens: Lens[S, A]): DifferentiableFunction[S, A] = ???
+      override def select[S, A](lens: Lens[S, A]): DifferentiableFunction[S, A] = Select(lens)
 
       override def from[T, Repr <: HList](generic: Generic.Aux[T, Repr]): DifferentiableFunction[Repr, T] = ???
 
@@ -1138,7 +1169,6 @@ object Differentiable {
       }
 
       override def flip[A, B, C]: DifferentiableFunction[DifferentiableFunction[A, DifferentiableFunction[B, C]], DifferentiableFunction[B, DifferentiableFunction[A, C]]] = {
-        implicit def self = this
         import Pointfree._
         curry3[DifferentiableFunction[A, DifferentiableFunction[B, C]], B, A, C](UncurriedFlip[A, B, C]())
       }
@@ -1172,27 +1202,54 @@ object Differentiable {
       override implicit def patch = Patch.NeverChangePatch[Self, Difference]()
 
       override def forward[InputData <: A, ADifference](input: Differentiable.Aux[InputData, ADifference]): Cache.Aux[_ <: B, ADifference, Difference] = {
+        input.patch match {
+          case NeverChangePatch() =>
+            new Cache {
+              override type Output = B
 
-        new Cache {
+              override type UpstreamDifference = Difference
 
-          override type Output = B
+              override type InputDifference = ADifference
 
-          override type UpstreamDifference = Difference
+              override type OutputDifference = Any
 
-          override type InputDifference = ADifference
+              override def output: Differentiable.Aux[Output, OutputDifference] = {
+                Differentiable(lens.get(input.self), NeverChangePatch())
+              }
 
-          //          override type OutputDifference = ???
+              override def backward(difference: OutputDifference) = new Differences[InputDifference, UpstreamDifference] {
+                override def inputDifference = NeverChange.asInstanceOf[ADifference]
 
-          override def output: Differentiable.Aux[Output, OutputDifference] = {
-            ???
-          }
+                override def weightDifference = NeverChange
+              }
+            }
+          case patch: Patch.ProductPatch[A] =>
+            def forwardField[BDifference](fieldPatch: Patch[B, BDifference]) = {
+              new Cache {
+                override type Output = B
 
-          override def backward(difference: OutputDifference): Differences[InputDifference, UpstreamDifference] = {
-            ???
-          }
+                override type UpstreamDifference = Difference
+
+                override type InputDifference = HashMap[Lens[A, _], _]
+
+                override type OutputDifference = BDifference
+
+                override def output: Differentiable.Aux[Output, OutputDifference] = {
+                  Differentiable(lens.get(input.self), fieldPatch)
+                }
+
+                override def backward(difference: OutputDifference) = new Differences[InputDifference, UpstreamDifference] {
+                  override def inputDifference: InputDifference = {
+                    HashMap(lens -> difference)
+                  }
+
+                  override def weightDifference = NeverChange
+                }
+              }
+            }
+            forwardField(patch.fieldPatches(lens))
         }
-      }
-
+      }.unsafeCast
     }
 
   }
