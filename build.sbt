@@ -21,3 +21,5 @@ scalacOptions in Compile in doc ++= {
 addCompilerPlugin("com.milessabin" % "si2712fix-plugin" % "1.2.0" cross CrossVersion.full)
 
 addCompilerPlugin("org.spire-math" % "kind-projector" % "0.8.0" cross CrossVersion.binary)
+
+libraryDependencies += "org.typelevel" %% "kittens" % "1.0.0-M3"
