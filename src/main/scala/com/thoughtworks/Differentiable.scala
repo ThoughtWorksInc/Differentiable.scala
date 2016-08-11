@@ -2,8 +2,10 @@ package com.thoughtworks
 
 import cats.kernel.std.tuple._
 import cats._
+import com.thoughtworks.Differentiable.DifferentiableFunction.Cache.Aux
 import shapeless._
 
+import scala.collection.immutable.HashMap
 import scala.language.existentials
 import scala.language.higherKinds
 
@@ -14,6 +16,7 @@ trait Differentiable[+A] {
   def apply(data: Data, difference: Difference, learningRate: Double): Data
 
   def differenceMonoid: Monoid[Difference]
+
 }
 
 object Differentiable {
@@ -42,7 +45,141 @@ object Differentiable {
 
   }
 
+  final case class DifferentiableProduct[Data0](fieldDifferentiables: Lens[Data0, ?] ~> Differentiable) extends Differentiable[Data0] {
+    override type Data = Data0
+    override type Difference = HashMap[Lens[Data, _], _]
+
+    override def apply(data: Data0, difference: Difference, learningRate: Double): Data0 = {
+      difference.foldLeft(data) { (data, kv) =>
+        val (lens, fieldDifference) = kv
+        def applyField[FieldData, FieldDifference](fieldDifferentiable: Differentiable.Aux[_, FieldData, FieldDifference]) = {
+          lens.asInstanceOf[Lens[Data, FieldData]].modify(data) { field =>
+            fieldDifferentiable.apply(field, fieldDifference.asInstanceOf[FieldDifference], learningRate)
+          }
+        }
+        applyField(fieldDifferentiables(lens): Differentiable.Aux[_, _, _])
+      }
+    }
+
+    override def differenceMonoid = new Monoid[Difference] {
+      override def empty = HashMap.empty
+
+      override def combine(x: Difference, y: Difference) = {
+        x.merged(y) { (kv1, kv2) =>
+          def combineField[FieldDifference](fieldMonoid: Monoid[FieldDifference]) = {
+            fieldMonoid.combine(kv1._2.asInstanceOf[FieldDifference], kv2._2.asInstanceOf[FieldDifference])
+          }
+          kv1._1 -> combineField(fieldDifferentiables(kv1._1).differenceMonoid)
+        }
+      }
+    }
+  }
+
+  //      final case class DifferentiableProduct[Data](fieldPatches: Lens[Data, ?] ~> Lambda[A => Patch[A, _]]) extends Patch[Data, HashMap[Lens[Data, _], _]] {
+  //        override def applyPatch(weight: Data, patch: HashMap[Lens[Data, _], _], learningRate: Double): Data = {
+  //          patch.foldLeft(weight) { (weight, kv) =>
+  //            val (lens, fieldDifference) = kv
+  //            lens.modify(weight) { field =>
+  //              def modifyField[FieldData](field: FieldData): FieldData = {
+  //                def applyPatchToField[FieldData1, FieldDifference](fieldPatch: Patch[FieldData1, FieldDifference]) = {
+  //                  fieldPatch.applyPatch(field.asInstanceOf[FieldData1], fieldDifference.asInstanceOf[FieldDifference], learningRate)
+  //                }
+  //                applyPatchToField(fieldPatches(lens)).asInstanceOf[FieldData]
+  //              }
+  //              modifyField(field)
+  //            }
+  //          }
+  //        }
+  //
+  //        override def empty = HashMap()
+  //
+  //        override def combine(x: HashMap[Lens[Data, _], _], y: HashMap[Lens[Data, _], _]): HashMap[Lens[Data, _], _] = {
+  //          x.merged(y) {
+  //            case ((k, v1), (_, v2)) =>
+  //              def combineField[FieldData, FieldDifference](fieldPatch: Patch[FieldData, FieldDifference]) = {
+  //                fieldPatch.combine(v1.asInstanceOf[FieldDifference], v2.asInstanceOf[FieldDifference])
+  //              }
+  //              k -> combineField(fieldPatches(k))
+  //          }
+  //        }
+  //      }
   object DifferentiableFunction {
+
+    final case class Constant[A, B]() extends DifferentiableFunction[B, A => B] with PureDifferentiable {
+      override def forward[BData, BDifference](weight: NoWeight.type, bData: BData)(implicit bDifferentiable: Aux[B, BData, BDifference]): Cache.Aux[(A) => B, Difference, BDifference] = {
+        val outputDifferentiable = new DifferentiableFunction[A, B] {
+          override type Data = BData
+          override type Difference = BDifference
+
+          override def forward[AData, ADifference](bData: Data, aData: AData)(implicit aDifferentiable: Aux[A, AData, ADifference]): Cache.Aux[B, Difference, ADifference] = {
+            new AbstractCache(bDifferentiable) {
+              override def output: BData = bData
+
+              override type WeightDifference = BDifference
+              override type InputDifference = ADifference
+
+              override def backward(outputDifference: BDifference) = new Differences[WeightDifference, InputDifference] {
+                override def weightDifference: WeightDifference = {
+                  outputDifference
+                }
+
+                override def inputDifference: InputDifference = aDifferentiable.differenceMonoid.empty
+              }
+            }
+          }
+
+          override def apply(data: Data, difference: Difference, learningRate: Double): Data = {
+            bDifferentiable.apply(data, difference, learningRate)
+          }
+
+          override def differenceMonoid: Monoid[Difference] = bDifferentiable.differenceMonoid
+        }
+        new AbstractCache(outputDifferentiable) {
+
+          override type WeightDifference = NeverChange.type
+          override type InputDifference = BDifference
+
+          override def output: BData = bData
+
+          override def backward(bDifference: BDifference): Differences[Difference, BDifference] = {
+            new Differences[Difference, BDifference] {
+              override def weightDifference = NeverChange
+
+              override def inputDifference: BDifference = bDifference
+            }
+          }
+        }
+      }
+    }
+
+
+    final case class Select[S, A](lens: Lens[S, A]) extends DifferentiableFunction[S, A] with PureDifferentiable {
+      override def forward[InputData, InputDifference0](weight: Data, input: InputData)(implicit inputDifferentiable: Aux[S, InputData, InputDifference0]): Cache.Aux[A, Difference, InputDifference0] = {
+        inputDifferentiable match {
+          case DifferentiableProduct(fieldDifferentiables) =>
+            fieldDifferentiables(lens) match {
+              case fieldDifferentiable: Differentiable.Aux[A, A, _] =>
+                new AbstractCache[A, fieldDifferentiable.Difference](fieldDifferentiable) {
+
+                  override type WeightDifference = NeverChange.type
+                  override type InputDifference = HashMap[Lens[S, _], _]
+
+                  override def output: A = lens.get(input.asInstanceOf[S])
+
+                  override def backward(outputDifference: fieldDifferentiable.Difference): Differences[WeightDifference, InputDifference] = {
+                    new Differences[WeightDifference, InputDifference] {
+                      override def weightDifference = NeverChange
+
+                      override def inputDifference = HashMap(lens -> outputDifference)
+                    }
+                  }
+                }.asInstanceOf[Cache.Aux[A, Difference, InputDifference0]]
+            }
+
+        }
+      }
+    }
+
 
     final case class Substitute[A, B, C]() extends DifferentiableFunction[A => B => C, (A => B) => A => C] with PureDifferentiable {
 
@@ -352,34 +489,6 @@ object Differentiable {
   //
   //  object Patch {
   //
-  //    final case class ProductPatch[Data](fieldPatches: Lens[Data, ?] ~> Lambda[A => Patch[A, _]]) extends Patch[Data, HashMap[Lens[Data, _], _]] {
-  //      override def applyPatch(weight: Data, patch: HashMap[Lens[Data, _], _], learningRate: Double): Data = {
-  //        patch.foldLeft(weight) { (weight, kv) =>
-  //          val (lens, fieldDifference) = kv
-  //          lens.modify(weight) { field =>
-  //            def modifyField[FieldData](field: FieldData): FieldData = {
-  //              def applyPatchToField[FieldData1, FieldDifference](fieldPatch: Patch[FieldData1, FieldDifference]) = {
-  //                fieldPatch.applyPatch(field.asInstanceOf[FieldData1], fieldDifference.asInstanceOf[FieldDifference], learningRate)
-  //              }
-  //              applyPatchToField(fieldPatches(lens)).asInstanceOf[FieldData]
-  //            }
-  //            modifyField(field)
-  //          }
-  //        }
-  //      }
-  //
-  //      override def empty = HashMap()
-  //
-  //      override def combine(x: HashMap[Lens[Data, _], _], y: HashMap[Lens[Data, _], _]): HashMap[Lens[Data, _], _] = {
-  //        x.merged(y) {
-  //          case ((k, v1), (_, v2)) =>
-  //            def combineField[FieldData, FieldDifference](fieldPatch: Patch[FieldData, FieldDifference]) = {
-  //              fieldPatch.combine(v1.asInstanceOf[FieldDifference], v2.asInstanceOf[FieldDifference])
-  //            }
-  //            k -> combineField(fieldPatches(k))
-  //        }
-  //      }
-  //    }
   //
   //    final case class LeftPatch[Data, Difference](leftPatch: Patch[Data, Difference]) extends Patch[Xor.Left[Data], Difference] {
   //      override def applyPatch(weight: Xor.Left[Data], patch: Difference, learningRate: Double): Xor.Left[Data] = {
@@ -1593,7 +1702,9 @@ object Differentiable {
 
     override def tail[Head, Tail <: HList]: DifferentiableOps[(::[Head, Tail]) => Tail, _, _] = ???
 
-    override def select[S, A](lens: Lens[S, A]): DifferentiableOps[S => A, _, _] = ???
+    override def select[S, A](lens: Lens[S, A]) = {
+      DifferentiableOps(NoWeight, DifferentiableFunction.Select[S, A](lens))
+    }
 
     override def from[T, Repr <: HList](generic: Generic.Aux[T, Repr]): DifferentiableOps[(Repr) => T, _, _] = ???
 
@@ -1605,7 +1716,9 @@ object Differentiable {
 
     override def duplicate[A, B]: DifferentiableOps[(A => A => B) => A => B, _, _] = ???
 
-    override def constant[A, B]: DifferentiableOps[B => A => B, _, _] = ???
+    override def constant[A, B] = {
+      DifferentiableOps(NoWeight, DifferentiableFunction.Constant[A, B]())
+    }
   }
 
   //
@@ -1622,68 +1735,5 @@ object Differentiable {
   //      override final def forward[InputData <: A, InputDifference](f: Differentiable.Aux[InputData, InputDifference]): Cache.Aux[_ <: B, InputDifference, Difference] = ???
   //
   //    }
-  //
-  //    final case class Select[A, B](lens: Lens[A, B]) extends DifferentiableFunction[A, B] {
-  //
-  //      override type Self = Select[A, B]
-  //
-  //      override type Difference = NeverChange.type
-  //
-  //      override implicit def patch = Patch.NeverChangePatch[Self, Difference]()
-  //
-  //      override def forward[InputData <: A, ADifference](f: Differentiable.Aux[InputData, ADifference]): Cache.Aux[_ <: B, ADifference, Difference] = {
-  //        f.patch match {
-  //          case NeverChangePatch() =>
-  //            new Cache {
-  //              override type Output = B
-  //
-  //              override type UpstreamDifference = Difference
-  //
-  //              override type InputDifference = ADifference
-  //
-  //              override type OutputDifference = Any
-  //
-  //              override def output: Differentiable.Aux[Output, OutputDifference] = {
-  //                Differentiable(lens.get(f.self), NeverChangePatch())
-  //              }
-  //
-  //              override def backward(difference: OutputDifference) = new Differences[InputDifference, UpstreamDifference] {
-  //                override def inputDifference = NeverChange.asInstanceOf[ADifference]
-  //
-  //                override def weightDifference = NeverChange
-  //              }
-  //            }
-  //          case patch: Patch.ProductPatch[A] =>
-  //            def forwardField[BDifference](fieldPatch: Difference[B, BDifference]) = {
-  //              new Cache {
-  //                override type Output = B
-  //
-  //                override type UpstreamDifference = Difference
-  //
-  //                override type InputDifference = HashMap[Lens[A, _], _]
-  //
-  //                override type OutputDifference = BDifference
-  //
-  //                override def output: Differentiable.Aux[Output, OutputDifference] = {
-  //                  Differentiable(lens.get(f.self), fieldPatch)
-  //                }
-  //
-  //                override def backward(difference: OutputDifference) = new Differences[InputDifference, UpstreamDifference] {
-  //                  override def inputDifference: InputDifference = {
-  //                    HashMap(lens -> difference)
-  //                  }
-  //
-  //                  override def weightDifference = NeverChange
-  //                }
-  //              }
-  //            }
-  //            forwardField(patch.fieldPatches(lens))
-  //        }
-  //      }.unsafeCast
-  //    }
-  //
-  //  }
-
-
 }
 
