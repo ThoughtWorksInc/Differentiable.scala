@@ -1,8 +1,6 @@
 package com.thoughtworks
 
-import cats.kernel.std.tuple._
 import cats._
-import com.thoughtworks.Differentiable.DifferentiableFunction.Cache.Aux
 import shapeless._
 
 import scala.collection.immutable.HashMap
@@ -69,7 +67,7 @@ object Differentiable {
           def combineField[FieldDifference](fieldMonoid: Monoid[FieldDifference]) = {
             fieldMonoid.combine(kv1._2.asInstanceOf[FieldDifference], kv2._2.asInstanceOf[FieldDifference])
           }
-          kv1._1 -> combineField(fieldDifferentiables(kv1._1).differenceMonoid)
+          Tuple2(kv1._1, combineField(fieldDifferentiables(kv1._1).differenceMonoid))
         }
       }
     }
@@ -106,170 +104,115 @@ object Differentiable {
   object DifferentiableFunction {
 
     final case class Id[A]() extends DifferentiableFunction[A, A] with PureDifferentiable {
-      override def forward[InputData, InputDifference0](weight: Data, input: InputData)(implicit inputDifferentiable: Aux[A, InputData, InputDifference0]): Cache.Aux[A, Difference, InputDifference0] = {
-        new AbstractCache(inputDifferentiable) {
-
-          override type InputDifference = InputDifference0
-
-          override def output: InputData = input
-
-          override def backward(outputDifference: InputDifference) = new Differences[WeightDifference, InputDifference] {
-            override def weightDifference = NeverChange
-
-            override def inputDifference = outputDifference
-          }
-        }
-
+      override def forward[InputData, InputDifference0](weight: Eval[Data], input: Eval[InputData])(implicit inputDifferentiable: Aux[A, InputData, InputDifference0]): Cache[A, Difference, InputDifference0, _, _] = {
+        Cache(input, inputDifferentiable, { outputDifference: Eval[InputDifference0] =>
+          (Eval.now(NeverChange), outputDifference)
+        })
       }
     }
 
 
-    final case class Constant[A, B]() extends DifferentiableFunction[B, A => B] with PureDifferentiable {
-      override def forward[BData, BDifference](weight: NoWeight.type, bData: BData)(implicit bDifferentiable: Aux[B, BData, BDifference]): Cache.Aux[(A) => B, Difference, BDifference] = {
-        val outputDifferentiable = new DifferentiableFunction[A, B] {
-          override type Data = BData
-          override type Difference = BDifference
+    final case class Constant[A, B]() extends DifferentiableFunction[A, B => A] with PureDifferentiable {
+      override def forward[AData, ADifference](weight: Eval[NoWeight.type], aData: Eval[AData])(implicit aDifferentiable: Aux[A, AData, ADifference]): Cache[B => A, Difference, ADifference, _, _] = {
+        val outputDifferentiable = new DifferentiableFunction[B, A] {
+          override type Data = AData
+          override type Difference = ADifference
 
-          override def forward[AData, ADifference](bData: Data, aData: AData)(implicit aDifferentiable: Aux[A, AData, ADifference]): Cache.Aux[B, Difference, ADifference] = {
-            new AbstractCache(bDifferentiable) {
-              override def output: BData = bData
-
-              override type InputDifference = ADifference
-
-              override def backward(outputDifference: BDifference) = new Differences[WeightDifference, InputDifference] {
-                override def weightDifference: WeightDifference = {
-                  outputDifference
-                }
-
-                override def inputDifference: InputDifference = aDifferentiable.differenceMonoid.empty
-              }
-            }
+          override def forward[BData, BDifference](aData: Eval[Data], bData: Eval[BData])(implicit bDifferentiable: Aux[B, BData, BDifference]): Cache[A, Difference, BDifference, _, _] = {
+            Cache(aData, aDifferentiable, { outputDifference: Eval[ADifference] =>
+              (outputDifference, Eval.now(bDifferentiable.differenceMonoid.empty))
+            })
           }
 
           override def apply(data: Data, difference: Difference, learningRate: Double): Data = {
-            bDifferentiable.apply(data, difference, learningRate)
+            aDifferentiable.apply(data, difference, learningRate)
           }
 
-          override def differenceMonoid: Monoid[Difference] = bDifferentiable.differenceMonoid
+          override def differenceMonoid: Monoid[Difference] = aDifferentiable.differenceMonoid
         }
-        new AbstractCache(outputDifferentiable) {
-
-          override type InputDifference = BDifference
-
-          override def output: BData = bData
-
-          override def backward(bDifference: BDifference): Differences[Difference, BDifference] = {
-            new Differences[Difference, BDifference] {
-              override def weightDifference = NeverChange
-
-              override def inputDifference: BDifference = bDifference
-            }
-          }
-        }
+        Cache(aData, outputDifferentiable, { aDifference: Eval[ADifference] =>
+          (Eval.now(NeverChange), aDifference)
+        })
       }
     }
 
 
     final case class Select[S, A](lens: Lens[S, A]) extends DifferentiableFunction[S, A] with PureDifferentiable {
-      override def forward[InputData, InputDifference0](weight: Data, input: InputData)(implicit inputDifferentiable: Aux[S, InputData, InputDifference0]): Cache.Aux[A, Difference, InputDifference0] = {
+      override def forward[InputData, InputDifference0](weight: Eval[Data], input: Eval[InputData])(implicit inputDifferentiable: Aux[S, InputData, InputDifference0]): Cache[A, Difference, InputDifference0, _, _] = {
         inputDifferentiable match {
           case DifferentiableProduct(fieldDifferentiables) =>
             fieldDifferentiables(lens) match {
               case fieldDifferentiable: Differentiable.Aux[A, A, _] =>
-                new AbstractCache[A, fieldDifferentiable.Difference](fieldDifferentiable) {
-
-                  override type InputDifference = HashMap[Lens[S, _], _]
-
-                  override def output: A = lens.get(input.asInstanceOf[S])
-
-                  override def backward(outputDifference: fieldDifferentiable.Difference): Differences[WeightDifference, InputDifference] = {
-                    new Differences[WeightDifference, InputDifference] {
-                      override def weightDifference = NeverChange
-
-                      override def inputDifference = HashMap(lens -> outputDifference)
-                    }
+                Cache(
+                  input.map { case s: S => lens.get(s) },
+                  fieldDifferentiable, { outputDifference: Eval[fieldDifferentiable.Difference] =>
+                    (Eval.now(NeverChange), outputDifference.map { fieldDifference =>
+                      (HashMap(lens -> fieldDifference))
+                    })
                   }
-                }.asInstanceOf[Cache.Aux[A, Difference, InputDifference0]]
+                )
             }
 
         }
-      }
+      }.asInstanceOf[Cache[A, Difference, InputDifference0, _, _]]
     }
 
 
     final case class Substitute[A, B, C]() extends DifferentiableFunction[A => B => C, (A => B) => A => C] with PureDifferentiable {
 
-      override def forward[FWeight, FDifference](pureWeight: Data, fWeight: FWeight)(implicit fDifferentiable: Differentiable.Aux[A => B => C, FWeight, FDifference]): Cache.Aux[(A => B) => A => C, Difference, FDifference] = {
+      override def forward[FWeight, FDifference](pureWeight: Eval[Data], fWeight: Eval[FWeight])(implicit fDifferentiable: Differentiable.Aux[A => B => C, FWeight, FDifference]): Cache[(A => B) => A => C, Difference, FDifference, _, _] = {
         val outputDifferentiable = new DifferentiableFunction[A => B, A => C] {
 
           override type Data = FWeight
 
           override type Difference = FDifference
 
-          override def forward[GWeight, GDifference](fWeight: Data, gWeight: GWeight)(implicit gDifferentiable: Differentiable.Aux[(A) => B, GWeight, GDifference]): Cache.Aux[A => C, Difference, GDifference] = {
+          override def forward[GWeight, GDifference](fWeight: Eval[Data], gWeight: Eval[GWeight])(implicit gDifferentiable: Differentiable.Aux[(A) => B, GWeight, GDifference]): Cache[A => C, Difference, GDifference, _, _] = {
 
-            type OutputDifference = (FDifference, GDifference)
-            type OutputData = (FWeight, GWeight)
-            val outputDifferentiable: Differentiable.Aux[A => C, OutputData, OutputDifference] = new DifferentiableFunction[A, C] {
+            type PairDifference = (Eval[FDifference], Eval[GDifference])
+            type PairWeight = (FWeight, GWeight)
+            val outputDifferentiable: Differentiable.Aux[A => C, PairWeight, PairDifference] = new DifferentiableFunction[A, C] {
               override type Data = (FWeight, GWeight)
-              override type Difference = (FDifference, GDifference)
+              override type Difference = (Eval[FDifference], Eval[GDifference])
 
               override def forward[AData, ADifference]
-              (weight: Data, aData: AData)
-              (implicit aDifferentiable: Differentiable.Aux[A, AData, ADifference]): Cache.Aux[C, Difference, ADifference] = {
+              (weight: Eval[Data], aData: Eval[AData])
+              (implicit aDifferentiable: Differentiable.Aux[A, AData, ADifference]): Cache[C, Difference, ADifference, _, _] = {
                 (fDifferentiable, gDifferentiable) match {
                   case (f: DifferentiableFunction[A, B => C], g: DifferentiableFunction[A, B]) =>
-                    val fCache = f.forward(fWeight, aData)(aDifferentiable)
-                    val gCache = g.forward(gWeight, aData)(aDifferentiable)
-
-                    fCache.outputDifferentiable match {
-                      case bToC: DifferentiableFunction[B, C] =>
-                        val cCache = bToC.forward(fCache.output, gCache.output)(gCache.outputDifferentiable)
-
-                        new AbstractCache(cCache.outputDifferentiable) {
-
-                          override type InputDifference = ADifference
-
-                          override def output = cCache.output
-
-                          override def backward(cDifference: OutputDifference): Differences[WeightDifference, InputDifference] = {
-                            val bcDifferences = cCache.backward(cDifference)
-                            val bDifference = bcDifferences.inputDifference
-                            val gDifferences = gCache.backward(bDifference)
-                            val fDifferences = fCache.backward(bcDifferences.weightDifference)
-                            new Differences[WeightDifference, InputDifference] {
-                              override def weightDifference: (FDifference, GDifference) = (fDifferences.weightDifference, gDifferences.weightDifference)
-
-                              override def inputDifference: InputDifference = aDifferentiable.differenceMonoid.combine(fDifferences.inputDifference, gDifferences.inputDifference)
-                            }
+                    def forwardFG[BToCWeight, BToCDifference, BData, BDifference](fCache: Cache[B => C, FDifference, ADifference, BToCWeight, BToCDifference], gCache: Cache[B, GDifference, ADifference, BData, BDifference]) = {
+                      fCache.outputDifferentiable match {
+                        case bToC: DifferentiableFunction[B, C] =>
+                          def forwardC[CData, CDifference](cCache: Cache[C, BToCDifference, BDifference, CData, CDifference]) = {
+                            Cache(cCache.output, cCache.outputDifferentiable, { cDifference: Eval[CDifference] =>
+                              val bcDifferences = cCache.backward(cDifference)
+                              val gDifferences = gCache.backward(bcDifferences._2)
+                              val fDifferences = fCache.backward(bcDifferences._1)
+                              Tuple2(Eval.now(Tuple2(fDifferences._1, gDifferences._1)), Applicative[Eval].map2(fDifferences._2, gDifferences._2)(aDifferentiable.differenceMonoid.combine))
+                            })
                           }
-                        }
+                          forwardC(bToC.forward(fCache.output, gCache.output)(gCache.outputDifferentiable))
+                      }
                     }
+                    forwardFG(f.forward(fWeight, aData)(aDifferentiable), g.forward(gWeight, aData)(aDifferentiable))
                 }
               }
 
-              override def apply(data: (FWeight, GWeight), difference: (FDifference, GDifference), learningRate: Double): Data = {
-                fDifferentiable.apply(data._1, difference._1, learningRate) -> gDifferentiable.apply(data._2, difference._2, learningRate)
+              override def apply(data: (FWeight, GWeight), difference: PairDifference, learningRate: Double): Data = {
+                Tuple2(fDifferentiable.apply(data._1, difference._1.value, learningRate), gDifferentiable.apply(data._2, difference._2.value, learningRate))
               }
 
               override def differenceMonoid: Monoid[Difference] = {
-                tuple2Monoid(fDifferentiable.differenceMonoid, gDifferentiable.differenceMonoid)
+                implicit val fMonoid = fDifferentiable.differenceMonoid
+                implicit val gMonoid = gDifferentiable.differenceMonoid
+                import cats.std.tuple.tuple2Monoid
+                Monoid[Difference]
               }
             }
-            new AbstractCache(outputDifferentiable) {
 
-              override type InputDifference = GDifference
-
-              override def output = (fWeight, gWeight)
-
-              override def backward(outputDifference: OutputDifference): Differences[WeightDifference, InputDifference] = {
-                new Differences[WeightDifference, InputDifference] {
-                  override def weightDifference = outputDifference._1
-
-                  override def inputDifference = outputDifference._2
-                }
-              }
-            }
+            Cache(Applicative[Eval].map2(fWeight, gWeight)(Tuple2(_, _)), outputDifferentiable, { outputDifference: Eval[PairDifference] =>
+              outputDifference.value
+            })
 
           }
 
@@ -279,62 +222,23 @@ object Differentiable {
 
           override def differenceMonoid: Monoid[Difference] = fDifferentiable.differenceMonoid
         }
-        new AbstractCache(outputDifferentiable) {
-          override type InputDifference = FDifference
-
-          override def output: OutputData = fWeight
-
-          override def backward(outputDifference: OutputDifference): Differences[WeightDifference, InputDifference] = {
-            new Differences[WeightDifference, InputDifference] {
-              override def weightDifference = NeverChange
-
-              override def inputDifference = outputDifference
-            }
-          }
-        }
-
+        Cache(fWeight, outputDifferentiable, { outputDifference: Eval[FDifference] =>
+          (Eval.now(NeverChange), outputDifference)
+        })
       }
     }
 
-
-    trait Differences[+WeightDifference, +InputDifference] {
-      def weightDifference: WeightDifference
-
-      def inputDifference: InputDifference
-    }
-
-    trait Cache[+Output] {
-      type WeightDifference
-      type InputDifference
-      type OutputData
-      type OutputDifference
-
-      def output: OutputData
-
-      implicit def outputDifferentiable: Differentiable.Aux[Output, OutputData, OutputDifference]
-
-      def backward(outputDifference: OutputDifference): Differences[WeightDifference, InputDifference]
-
-    }
-
-    object Cache {
-      type Aux[+Output, WeightDifference0, InputDifference0] = Cache[Output] {
-        type WeightDifference = WeightDifference0
-        type InputDifference = InputDifference0
-      }
-    }
+    final case class Cache[+Output, WeightDifference, InputDifference, OutputData, OutputDifference]
+    (output: Eval[OutputData],
+     outputDifferentiable: Differentiable.Aux[Output, OutputData, OutputDifference],
+     backward: Eval[OutputDifference] => (Eval[WeightDifference], Eval[InputDifference])
+    )
 
   }
 
   trait DifferentiableFunction[-Input, +Output] extends Differentiable[Input => Output] {
 
-    protected abstract class AbstractCache[OutputData0, OutputDifference0](override val outputDifferentiable: Differentiable.Aux[Output, OutputData0, OutputDifference0]) extends DifferentiableFunction.Cache[Output] {
-      override final type OutputData = OutputData0
-      override final type OutputDifference = OutputDifference0
-      override final type WeightDifference = Difference
-    }
-
-    def forward[InputData, InputDifference](weight: Data, input: InputData)(implicit inputDifferentiable: Differentiable.Aux[Input, InputData, InputDifference]): DifferentiableFunction.Cache.Aux[Output, Difference, InputDifference]
+    def forward[InputData, InputDifference](weight: Eval[Data], input: Eval[InputData])(implicit inputDifferentiable: Differentiable.Aux[Input, InputData, InputDifference]): DifferentiableFunction.Cache[Output, Difference, InputDifference, _, _]
 
   }
 
