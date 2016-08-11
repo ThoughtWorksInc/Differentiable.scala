@@ -147,7 +147,7 @@ object Differentiable {
                   input.map { case s: S => lens.get(s) },
                   fieldDifferentiable, { outputDifference: Eval[fieldDifferentiable.Difference] =>
                     (Eval.now(NeverChange), outputDifference.map { fieldDifference =>
-                      (HashMap(lens -> fieldDifference))
+                      HashMap(lens -> fieldDifference)
                     })
                   }
                 )
