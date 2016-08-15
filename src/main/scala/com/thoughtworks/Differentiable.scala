@@ -1,7 +1,7 @@
 package com.thoughtworks
 
 import cats._
-import shapeless.{::, Generic, HList, HNil, Lens}
+import shapeless.{::, HList, HNil}
 
 import scala.language.existentials
 import scala.language.higherKinds
@@ -23,6 +23,17 @@ object Differentiable {
     type Data = Data0
   }
 
+  implicit private def tuple2EvalMonoid[A, B](implicit monoidA: Monoid[A], monoidB: Monoid[B]): Monoid[(Eval[_ <: A], Eval[_ <: B])] = {
+    new Monoid[(Eval[_ <: A], Eval[_ <: B])] {
+      override def empty: (Eval[_ <: A], Eval[_ <: B]) = {
+        (Eval.now(monoidA.empty), Eval.now(monoidB.empty))
+      }
+
+      override def combine(x: (Eval[_ <: A], Eval[_ <: B]), y: (Eval[_ <: A], Eval[_ <: B])) = {
+        (Applicative[Eval].map2(x._1, y._1)(monoidA.combine), Applicative[Eval].map2(x._2, y._2)(monoidB.combine))
+      }
+    }
+  }
 
   object Patch {
 
@@ -135,8 +146,8 @@ object Differentiable {
           override type OutputDelta = OutputDelta0
           override val output = output0
 
-          override def backward(outputDifference: Eval[_ <: OutputDelta]) = {
-            backward0(outputDifference)
+          override def backward(outputDelta: Eval[_ <: OutputDelta]) = {
+            backward0(outputDelta)
           }
 
         }
@@ -162,31 +173,15 @@ object Differentiable {
       override final type Delta = DeltaWeight
     }
 
-    implicit private def tuple2EvalMonoid[A, B](implicit monoidA: Monoid[A], monoidB: Monoid[B]): Monoid[(Eval[_ <: A], Eval[_ <: B])] = {
-      new Monoid[(Eval[_ <: A], Eval[_ <: B])] {
-        override def empty: (Eval[_ <: A], Eval[_ <: B]) = {
-          (Eval.now(monoidA.empty), Eval.now(monoidB.empty))
-        }
-
-        override def combine(x: (Eval[_ <: A], Eval[_ <: B]), y: (Eval[_ <: A], Eval[_ <: B])) = {
-          (Applicative[Eval].map2(x._1, y._1)(monoidA.combine), Applicative[Eval].map2(x._2, y._2)(monoidB.combine))
-        }
-      }
-    }
-
     final case class HCons[Head, Tail <: HList]() extends DifferentiableFunction[(Head), (Tail) => Head :: Tail] with Pure {
+
       import Pure._
 
       override def forward[HeadData, HeadDelta] = { head: Differentiable.Aux[Head, HeadData, HeadDelta] =>
         val partiallyApplied1 = new AbstractDifferentiableFunction(head.data, head.monoid, head.patch) with DifferentiableFunction[Tail, Head :: Tail] {
 
           override def forward[TailData, TailDelta] = { tail: Differentiable.Aux[Tail, TailData, TailDelta] =>
-            val data = Eval.now(head.data, tail.data)
-            val monoid = Applicative[Eval].map2(head.monoid, tail.monoid)(tuple2EvalMonoid(_, _))
-            val patch = Applicative[Eval].map2(head.patch, tail.patch)(Patch.tuple2EvalPatch(_, _))
-
-
-            ForwardPass(DifferentiableHCons[Head, Tail, HeadData, TailData, HeadDelta, TailDelta](data, monoid, patch), { outputDifference: Eval[_ <: (Eval[_ <: HeadDelta], Eval[_ <: TailDelta])] =>
+            ForwardPass(DifferentiableHCons[Head, Tail, HeadData, TailData, HeadDelta, TailDelta](head, tail), { outputDifference: Eval[_ <: (Eval[_ <: HeadDelta], Eval[_ <: TailDelta])] =>
               BackwardPass(
                 for {
                   pair <- outputDifference
@@ -205,6 +200,43 @@ object Differentiable {
         })
       }
     }
+
+    final case class Head[Head, Tail <: HList] extends DifferentiableFunction[Head :: Tail, Head] with Pure {
+
+      private def forwardHList[HeadData, TailData, HeadDelta, TailDelta](l: DifferentiableHCons[Head, Tail, HeadData, TailData, HeadDelta, TailDelta]) = {
+        import Pure._
+        ForwardPass(l.head, { headDelta: Eval[_ <: HeadDelta] =>
+          BackwardPass[NoPatch.type, l.Delta](
+            NoPatch.eval,
+            Eval.now((headDelta, l.tail.monoid.map(_.empty)))
+          )
+        })
+      }
+
+      override def forward[InputData, InputDelta] = {
+        case l: DifferentiableHCons[Head, Tail, _, _, _, _] =>
+          forwardHList(l)
+      }
+    }
+
+    final case class Tail[Head, Tail <: HList] extends DifferentiableFunction[Head :: Tail, Tail] with Pure {
+
+      private def forwardHList[HeadData, TailData, HeadDelta, TailDelta](l: DifferentiableHCons[Head, Tail, HeadData, TailData, HeadDelta, TailDelta]) = {
+        import Pure._
+        ForwardPass(l.tail, { tailDelta: Eval[_ <: TailDelta] =>
+          BackwardPass[NoPatch.type, l.Delta](
+            NoPatch.eval,
+            Eval.now((l.head.monoid.map(_.empty), tailDelta))
+          )
+        })
+      }
+
+      override def forward[InputData, InputDelta] = {
+        case l: DifferentiableHCons[Head, Tail, _, _, _, _] =>
+          forwardHList(l)
+      }
+    }
+
 
     final case class Substitute[A, B, C]() extends DifferentiableFunction[A => B => C, (A => B) => A => C] with Pure {
 
@@ -261,44 +293,76 @@ object Differentiable {
 
     }
 
+    final case class Constant[Value, Ignore]() extends DifferentiableFunction[Value, Ignore => Value] with Pure {
+
+      import Pure._
+
+      override def forward[ValueData, ValueDelta] = { value: (Differentiable.Aux[Value, ValueData, ValueDelta]) =>
+        val partiallyApplied1 = new AbstractDifferentiableFunction(value.data, value.monoid, value.patch) with DifferentiableFunction[Ignore, Value] {
+          override def forward[IgnoreData, IgnoreDelta] = { ignore: Differentiable.Aux[Ignore, IgnoreData, IgnoreDelta] =>
+            ForwardPass(value, { outputDifference: Eval[_ <: ValueDelta] =>
+              BackwardPass(outputDifference, ignore.monoid.map(_.empty))
+            })
+          }
+        }
+        ForwardPass(partiallyApplied1, { outputDifference: Eval[_ <: ValueDelta] =>
+          BackwardPass(NoPatch.eval, outputDifference)
+        })
+      }
+    }
+
+    final case class Id[A]() extends DifferentiableFunction[A, A] with Pure {
+
+      import Pure._
+
+      override def forward[InputData, InputDelta] = { a =>
+        ForwardPass(a, { delta: Eval[_ <: InputDelta] =>
+          BackwardPass(NoPatch.eval, delta)
+        })
+
+      }
+    }
+
   }
 
   object DifferentiableHNil extends Differentiable[HNil] with Pure
 
   final case class DifferentiableHCons[Head, Tail <: HList, HeadData, TailData, HeadDelta, TailDelta]
   (
-    override val data: Eval[_ <: (Eval[_ <: HeadData], Eval[_ <: TailData])],
-    override val monoid: Eval[_ <: Monoid[(Eval[_ <: HeadDelta], Eval[_ <: TailDelta])]],
-    override val patch: Eval[_ <: Patch[(Eval[_ <: HeadData], Eval[_ <: TailData]), (Eval[_ <: HeadDelta], Eval[_ <: TailDelta])]]
+    head: Differentiable.Aux[Head, HeadData, HeadDelta],
+    tail: Differentiable.Aux[Tail, TailData, TailDelta]
   ) extends Differentiable[Head :: Tail] {
     override type Data = (Eval[_ <: HeadData], Eval[_ <: TailData])
     override type Delta = (Eval[_ <: HeadDelta], Eval[_ <: TailDelta])
+    override val data: Eval[_ <: Data] = Eval.now(head.data, tail.data)
+    override val monoid = Applicative[Eval].map2(head.monoid, tail.monoid)(tuple2EvalMonoid(_, _))
+    override val patch = Applicative[Eval].map2(head.patch, tail.patch)(Patch.tuple2EvalPatch(_, _))
   }
 
   object DifferentiableInstances extends Pointfree[Differentiable] {
+
     import com.thoughtworks.Differentiable.DifferentiableFunction._
 
-    override def hnil: Differentiable[HNil] = DifferentiableHNil
+    override def hnil = DifferentiableHNil
 
-    override def hcons[Head, Tail <: HList]: Differentiable[(Head) => (Tail) => Head :: Tail] = HCons[Head, Tail]()
+    override def hcons[Head, Tail <: HList] = HCons[Head, Tail]()
 
-    override def head[Head, Tail <: HList]: Differentiable[Head :: Tail => Head] = ???
+    override def head[Head, Tail <: HList] = DifferentiableFunction.Head[Head, Tail]()
 
-    override def tail[Head, Tail <: HList]: Differentiable[Head :: Tail => Tail] = ???
+    override def tail[Head, Tail <: HList] = DifferentiableFunction.Tail[Head, Tail]()
 
-    override def ap[A, B](ff: Differentiable[(A) => B])(fa: Differentiable[A]): Differentiable[B] = ???
+    override def ap[A, B](ff: Differentiable[(A) => B])(fa: Differentiable[A]): Differentiable[B] = {
+      ff match {
+        case ff: DifferentiableFunction[A, B] =>
+          ff.forward(fa: com.thoughtworks.Differentiable.Aux[A, _, _]).output
+      }
+    }
 
     override def substitute[A, B, C] = Substitute[A, B, C]()
 
-    override def id[A]: Differentiable[(A) => A] = ???
+    override def id[A] = Id[A]()
 
-    override def compose[A, B, C]: Differentiable[((B) => C) => ((A) => B) => (A) => C] = ???
-
-    override def flip[A, B, C]: Differentiable[((A) => (B) => C) => (B) => (A) => C] = ???
-
-    override def duplicate[A, B]: Differentiable[((A) => (A) => B) => (A) => B] = ???
-
-    override def constant[A, B]: Differentiable[(A) => (B) => A] = ???
+    override def constant[A, B] = Constant[A, B]()
   }
 
 }
