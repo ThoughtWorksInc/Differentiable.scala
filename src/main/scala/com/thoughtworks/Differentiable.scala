@@ -180,6 +180,7 @@ object Differentiable {
 
           override def forward[TailData, TailDelta] = { tail: Differentiable.Aux[Tail, TailData, TailDelta] =>
             ForwardPass(DifferentiableHCons[Head, Tail, HeadData, TailData, HeadDelta, TailDelta](head, tail), { outputDifference: Eval[_ <: (Eval[_ <: HeadDelta], Eval[_ <: TailDelta])] =>
+              // TODO: An `Eval` monad should check if `outputDifference` is a immediate value. If it is a immediate value, `flatMap` should compute immediately as well
               BackwardPass(
                 for {
                   pair <- outputDifference
@@ -271,6 +272,8 @@ object Differentiable {
                   }
                 }
                 ForwardPass(partiallyApplied2, { outputDifference: Eval[_ <: (Eval[_ <: FDelta], Eval[_ <: GDelta])] =>
+                  // TODO: An `Eval` monad should check if `outputDifference` is a immediate value. If it is a immediate value, `flatMap` should compute immediately as well
+
                   BackwardPass(
                     for {
                       pair <- outputDifference
