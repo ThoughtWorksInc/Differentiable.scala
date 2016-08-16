@@ -12,8 +12,6 @@ trait Differentiable[+A] extends Any {
   val data: Eval[_ <: Data]
   val monoid: Eval[_ <: Monoid[Delta]]
   val patch: Eval[_ <: Differentiable.Patch[Data, Delta]]
-
-
 }
 
 object Differentiable {
