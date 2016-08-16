@@ -201,7 +201,7 @@ object Differentiable {
       }
     }
 
-    final case class Head[Head, Tail <: HList] extends DifferentiableFunction[Head :: Tail, Head] with Pure {
+    final case class Head[Head, Tail <: HList]() extends DifferentiableFunction[Head :: Tail, Head] with Pure {
 
       private def forwardHList[HeadData, TailData, HeadDelta, TailDelta](l: DifferentiableHCons[Head, Tail, HeadData, TailData, HeadDelta, TailDelta]) = {
         import Pure._
@@ -219,7 +219,7 @@ object Differentiable {
       }
     }
 
-    final case class Tail[Head, Tail <: HList] extends DifferentiableFunction[Head :: Tail, Tail] with Pure {
+    final case class Tail[Head, Tail <: HList]() extends DifferentiableFunction[Head :: Tail, Tail] with Pure {
 
       private def forwardHList[HeadData, TailData, HeadDelta, TailDelta](l: DifferentiableHCons[Head, Tail, HeadData, TailData, HeadDelta, TailDelta]) = {
         import Pure._
