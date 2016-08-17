@@ -3,8 +3,7 @@ package com.thoughtworks
 import cats._
 import shapeless.{::, HList, HNil}
 
-import scala.language.existentials
-import scala.language.higherKinds
+import scala.language.{existentials, higherKinds}
 
 trait Differentiable[+A] extends Any {
   type Data
