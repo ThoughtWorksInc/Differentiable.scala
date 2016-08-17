@@ -2,6 +2,7 @@ package com.thoughtworks
 
 import cats._
 import shapeless.{::, HList, HNil}
+import simulacrum.typeclass
 
 import scala.language.{existentials, higherKinds}
 
@@ -450,6 +451,18 @@ object Differentiable {
       }
     }
 
+    final case class Freeze[A]() extends DifferentiableFunction[A, A] with Pure {
+
+      import Pure._
+
+      override def forward[InputData, InputDelta] = { a =>
+        ForwardPass(a, { delta: Eval[_ <: InputDelta] =>
+          BackwardPass(NoPatch.eval, a.monoid.map(_.empty))
+        })
+
+      }
+    }
+
   }
 
   object DifferentiableHNil extends Differentiable[HNil] with Pure
@@ -466,7 +479,12 @@ object Differentiable {
     override val patch = Applicative[Eval].map2(head.patch, tail.patch)(Patch.tuple2EvalPatch(_, _))
   }
 
-  object DifferentiableInstances extends Pointfree[Differentiable] {
+  @typeclass
+  trait Freezing[F[_]] {
+    def freeze[A]: F[A => A]
+  }
+
+  object DifferentiableInstances extends Pointfree[Differentiable] with Freezing[Differentiable] {
 
     import com.thoughtworks.Differentiable.DifferentiableFunction._
 
@@ -496,6 +514,8 @@ object Differentiable {
     override def flip[A, B, C] = Flip[A, B, C]()
 
     override def duplicate[A, B] = Duplicate[A, B]()
+
+    override def freeze[A] = Freeze[A]()
 
   }
 
