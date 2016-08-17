@@ -171,7 +171,7 @@ object Differentiable {
       override final type Delta = DeltaWeight
     }
 
-    final case class HCons[Head, Tail <: HList]() extends DifferentiableFunction[(Head), (Tail) => Head :: Tail] with Pure {
+    final case class HCons[Head, Tail <: HList]() extends DifferentiableFunction[Head, Tail => Head :: Tail] with Pure {
 
       import Pure._
 
