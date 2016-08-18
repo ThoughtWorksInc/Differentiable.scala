@@ -3,7 +3,7 @@ package com.thoughtworks
 import cats._
 import shapeless.{::, HList, HNil}
 import simulacrum.typeclass
-
+import scala.language.implicitConversions
 import scala.language.{existentials, higherKinds}
 
 trait Differentiable[+A] extends Any {
@@ -516,6 +516,8 @@ object Differentiable {
     override def duplicate[A, B] = Duplicate[A, B]()
 
     override def freeze[A] = Freeze[A]()
+
+    override def curry2[A, B, R]: Differentiable[((A, B) => R) => A => B => R] = ???
 
   }
 
