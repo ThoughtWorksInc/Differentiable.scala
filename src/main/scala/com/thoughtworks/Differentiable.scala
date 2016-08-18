@@ -203,38 +203,16 @@ object Differentiable {
     }
 
     final case class Head[Head, Tail <: HList]() extends DifferentiableFunction[Head :: Tail, Head] with Pure {
-
-      private def forwardHList[HeadData, TailData, HeadDelta, TailDelta](l: DifferentiableHCons[Head, Tail, HeadData, TailData, HeadDelta, TailDelta]) = {
-        import Pure._
-        ForwardPass(l.head, { headDelta: Eval[_ <: HeadDelta] =>
-          BackwardPass[NoPatch.type, l.Delta](
-            NoPatch.eval,
-            Eval.now((headDelta, l.tail.monoid.map(_.empty)))
-          )
-        })
-      }
-
-      override def forward[InputData, InputDelta] = {
-        case l: DifferentiableHCons[Head, Tail, _, _, _, _] =>
-          forwardHList(l)
+       override def forward[InputData, InputDelta] = {
+        case l: DifferentiableHCons.Forward[Head, Tail, InputDelta] =>
+          l.forwardHead
       }
     }
 
     final case class Tail[Head, Tail <: HList]() extends DifferentiableFunction[Head :: Tail, Tail] with Pure {
-
-      private def forwardHList[HeadData, TailData, HeadDelta, TailDelta](l: DifferentiableHCons[Head, Tail, HeadData, TailData, HeadDelta, TailDelta]) = {
-        import Pure._
-        ForwardPass(l.tail, { tailDelta: Eval[_ <: TailDelta] =>
-          BackwardPass[NoPatch.type, l.Delta](
-            NoPatch.eval,
-            Eval.now((l.head.monoid.map(_.empty), tailDelta))
-          )
-        })
-      }
-
       override def forward[InputData, InputDelta] = {
-        case l: DifferentiableHCons[Head, Tail, _, _, _, _] =>
-          forwardHList(l)
+        case l: DifferentiableHCons.Forward[Head, Tail, InputDelta] =>
+          l.forwardTail
       }
     }
 
@@ -469,13 +447,49 @@ object Differentiable {
 
   object DifferentiableHNil extends Differentiable[HNil] with Pure
 
-  final case class DifferentiableHCons[Head, Tail <: HList, HeadData, TailData, HeadDelta, TailDelta]
+  object DifferentiableHCons {
+
+    import Pure._
+    import DifferentiableFunction._
+
+    sealed trait Forward[Head, Tail <: HList, Delta0] extends Differentiable[Head :: Tail] {
+      override type Delta = Delta0
+
+      private[Differentiable] def forwardHead: ForwardPass[Head, NoPatch.type, Delta]
+
+      private[Differentiable] def forwardTail: ForwardPass[Tail, NoPatch.type, Delta]
+    }
+
+  }
+
+  final case class DifferentiableHCons[H, T <: HList, HeadData, TailData, HeadDelta, TailDelta]
   (
-    head: Differentiable.Aux[Head, HeadData, HeadDelta],
-    tail: Differentiable.Aux[Tail, TailData, TailDelta]
-  ) extends Differentiable[Head :: Tail] {
+    head: Differentiable.Aux[H, HeadData, HeadDelta],
+    tail: Differentiable.Aux[T, TailData, TailDelta]
+  ) extends DifferentiableHCons.Forward[H, T, (Eval[_ <: HeadDelta], Eval[_ <: TailDelta])] {
+
+    import Pure._
+    import DifferentiableFunction._
+
+    private[Differentiable] def forwardHead: ForwardPass[H, NoPatch.type, Delta] = {
+      ForwardPass(head, { headDelta: Eval[_ <: HeadDelta] =>
+        BackwardPass[NoPatch.type, Delta](
+          NoPatch.eval,
+          Eval.now(headDelta, tail.monoid.map(_.empty))
+        )
+      })
+    }
+
+    private[Differentiable] def forwardTail: ForwardPass[T, NoPatch.type, Delta] = {
+      ForwardPass(tail, { tailDelta: Eval[_ <: TailDelta] =>
+        BackwardPass[NoPatch.type, Delta](
+          NoPatch.eval,
+          Eval.now((head.monoid.map(_.empty), tailDelta))
+        )
+      })
+    }
+
     override type Data = (Eval[_ <: HeadData], Eval[_ <: TailData])
-    override type Delta = (Eval[_ <: HeadDelta], Eval[_ <: TailDelta])
     override val data: Eval[_ <: Data] = Eval.now(head.data, tail.data)
     override val monoid = Applicative[Eval].map2(head.monoid, tail.monoid)(tuple2EvalMonoid(_, _))
     override val patch = Applicative[Eval].map2(head.patch, tail.patch)(Patch.tuple2EvalPatch(_, _))
