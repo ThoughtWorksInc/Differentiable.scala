@@ -1,8 +1,10 @@
 package com.thoughtworks
 
+import Pointfree.ops._
 import cats._
 import shapeless.{::, HList, HNil}
 import simulacrum.typeclass
+
 import scala.language.implicitConversions
 import scala.language.{existentials, higherKinds}
 
@@ -480,18 +482,21 @@ object Differentiable {
   }
 
   @typeclass
-  trait Freezing[F[_]] extends Pointfree[F] {
+  trait Freezing[F[_]] {
     def freeze[A]: F[A => A]
+  }
 
-    trait WithParameter[Parameter] extends super.WithParameter[Parameter] with Freezing[Lambda[X => F[Parameter => X]]] {
-      import Pointfree.ops._
+  @typeclass
+  trait PointfreeFreezing[F[_]] extends Pointfree[F] with Freezing[F] {
+
+    trait WithParameter[Parameter] extends super.WithParameter[Parameter] with PointfreeFreezing[Lambda[X => F[Parameter => X]]] {
       def freeze[A] = outer.freeze[A].withParameter
     }
 
     override def withParameterInstances[Parameter] = new WithParameter[Parameter] {}
   }
 
-  object DifferentiableInstances extends Pointfree[Differentiable] with Freezing[Differentiable] {
+  trait DifferentiableInstances extends PointfreeFreezing[Differentiable] {
 
     import com.thoughtworks.Differentiable.DifferentiableFunction._
 
@@ -527,6 +532,8 @@ object Differentiable {
     override def curry2[A, B, R]: Differentiable[((A, B) => R) => A => B => R] = ???
 
   }
+
+  object DifferentiableInstances extends DifferentiableInstances
 
 }
 
