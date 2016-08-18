@@ -203,7 +203,7 @@ object Differentiable {
     }
 
     final case class Head[Head, Tail <: HList]() extends DifferentiableFunction[Head :: Tail, Head] with Pure {
-       override def forward[InputData, InputDelta] = {
+      override def forward[InputData, InputDelta] = {
         case l: DifferentiableHCons.Forward[Head, Tail, InputDelta] =>
           l.forwardHead
       }
@@ -500,15 +500,22 @@ object Differentiable {
     def freeze[A]: F[A => A]
   }
 
-  @typeclass
-  trait PointfreeFreezing[F[_]] extends Pointfree[F] with Freezing[F] {
+  object PointfreeFreezing {
 
-    trait WithParameter[Parameter] extends super.WithParameter[Parameter] with PointfreeFreezing[Lambda[X => F[Parameter => X]]] {
+    trait WithParameter[F[_], Parameter] extends Pointfree.WithParameter[F, Parameter] with PointfreeFreezing[Lambda[X => F[Parameter => X]]] {
+      implicit protected def outer: PointfreeFreezing[F]
+
       def freeze[A] = outer.freeze[A].withParameter
     }
 
-    override def withParameterInstances[Parameter] = new WithParameter[Parameter] {}
+    implicit def withParameterInstances[F[_], Parameter](implicit underlying: PointfreeFreezing[F]) = new WithParameter[F, Parameter] {
+      override implicit protected def outer = underlying
+    }
   }
+
+  @typeclass
+  trait PointfreeFreezing[F[_]] extends Pointfree[F] with Freezing[F]
+
 
   trait DifferentiableInstances extends PointfreeFreezing[Differentiable] {
 
