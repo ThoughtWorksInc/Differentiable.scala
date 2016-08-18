@@ -480,8 +480,15 @@ object Differentiable {
   }
 
   @typeclass
-  trait Freezing[F[_]] {
+  trait Freezing[F[_]] extends Pointfree[F] {
     def freeze[A]: F[A => A]
+
+    trait WithParameter[Parameter] extends super.WithParameter[Parameter] with Freezing[Lambda[X => F[Parameter => X]]] {
+      import Pointfree.ops._
+      def freeze[A] = outer.freeze[A].withParameter
+    }
+
+    override def withParameterInstances[Parameter] = new WithParameter[Parameter] {}
   }
 
   object DifferentiableInstances extends Pointfree[Differentiable] with Freezing[Differentiable] {
