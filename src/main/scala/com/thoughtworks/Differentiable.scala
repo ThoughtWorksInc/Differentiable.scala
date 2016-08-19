@@ -2,13 +2,13 @@ package com.thoughtworks
 
 import Pointfree.ops._
 import cats._
-import shapeless.{::, HList, HNil}
+import shapeless.{::, HList, HNil, Lens}
 import simulacrum.typeclass
 
 import scala.language.implicitConversions
 import scala.language.{existentials, higherKinds}
 
-trait Differentiable[+A] extends Any {
+trait Differentiable[+A] {
   type Data
   type Delta
   val data: Eval[_ <: Data]
@@ -68,11 +68,11 @@ object Differentiable {
 
     import Pure._
 
-    override type Data = NeverChange.type
-    override type Delta = NoPatch.type
-    override val data = NeverChange.eval
-    override val patch = NoPatch.evalPureInstances
-    override val monoid = NoPatch.evalPureInstances
+    override final type Data = NeverChange.type
+    override final type Delta = NoPatch.type
+    override final val data = NeverChange.eval
+    override final val patch = NoPatch.evalPureInstances
+    override final val monoid = NoPatch.evalPureInstances
 
   }
 
@@ -101,7 +101,10 @@ object Differentiable {
 
   }
 
-  trait DifferentiableFunction[-Input, +Output] extends Differentiable[Input => Output] {
+  trait DifferentiableFunction[-Input0, +Output0] extends Differentiable[Input0 => Output0] {
+
+    type Input = Input0
+    type Output = Output0
 
     import DifferentiableFunction._
 
@@ -168,7 +171,6 @@ object Differentiable {
       override final val patch: Eval[_ <: Patch[Weight, DeltaWeight]]
     ) extends {
       _: DifferentiableFunction[_, _] =>
-
       override final type Data = Weight
       override final type Delta = DeltaWeight
     }
