@@ -1,556 +1,65 @@
 package com.thoughtworks
 
-import cats._
-import com.thoughtworks.Differentiable.DifferentiableFunction.Factory.PureForward
-import shapeless.{::, HList, HNil, Lens}
+import scala.language.existentials
+import cats.{Eval, Monoid}
+import com.thoughtworks.Differentiable.StrongOps
+import shapeless.tag._
+import shapeless.{::, HList, HNil, tag}
 import simulacrum.typeclass
 
+import scala.language.higherKinds
 import scala.language.implicitConversions
-import scala.language.{existentials, higherKinds}
 
-trait Differentiable[+A] {
-  type Data
+/**
+  * @author 杨博 (Yang Bo) &lt;pop.atry@gmail.com&gt;
+  */
+
+@typeclass
+trait Differentiable[Data] extends AnyRef {
   type Delta
-  val data: Eval[_ <: Data]
-  val monoid: Eval[_ <: Monoid[Delta]]
-  val patch: Eval[_ <: Differentiable.Patch[Data, Delta]]
+
+  def monoid: Monoid[Delta]
+
+  def patch: Differentiable.Patch[Data, Delta]
+
+  final def applyPatch(data: Data, delta: Delta, learningRate: Double) = patch(data, delta, learningRate)
+
+  final def pureOps(implicit dataConstrait: HNil.type <:< Data) = {
+    new StrongOps[Data, Delta, this.type] {
+      override def self = dataConstrait(HNil)
+
+      override val typeClassInstance: Differentiable.this.type = Differentiable.this
+    }
+  }
+
 }
 
 object Differentiable {
 
-  import com.thoughtworks.Pointfree.ops._
-
-  type Aux[+A, Data0, Delta0] = Differentiable[A] {
+  type Aux[Data, Delta0] = Differentiable[Data] {
     type Delta = Delta0
-    type Data = Data0
   }
 
-  implicit private def tuple2EvalMonoid[A, B](implicit monoidA: Monoid[A], monoidB: Monoid[B]): Monoid[(Eval[_ <: A], Eval[_ <: B])] = {
-    new Monoid[(Eval[_ <: A], Eval[_ <: B])] {
-      override def empty: (Eval[_ <: A], Eval[_ <: B]) = {
-        (Eval.now(monoidA.empty), Eval.now(monoidB.empty))
-      }
+  import PointfreeFreezing.ops._
 
-      override def combine(x: (Eval[_ <: A], Eval[_ <: B]), y: (Eval[_ <: A], Eval[_ <: B])) = {
-        (Applicative[Eval].map2(x._1, y._1)(monoidA.combine), Applicative[Eval].map2(x._2, y._2)(monoidB.combine))
-      }
+  trait StrongOps[Data, Weight, +TypeClass <: Differentiable.Aux[Data, Weight]] extends AllOps[Data] {
+    def erase[A]: WeakOps[A] = {
+      tag[A].apply[StrongOps[_, _, _]](this)
     }
+
+    override val typeClassInstance: TypeClass
   }
 
-  object Patch {
+  object StrongOps {
 
-    implicit def tuple2Patch[Data1, Delta1, Data2, Delta2]
-    (implicit patch1: Patch[Data1, Delta1], patch2: Patch[Data2, Delta2]) = {
-      new Patch[(Data1, Data2), (Delta1, Delta2)] {
-        override def apply(data: (Data1, Data2), delta: (Delta1, Delta2), learningRate: Double): (Data1, Data2) = {
-          (patch1.apply(data._1, delta._1, learningRate), patch2.apply(data._2, delta._2, learningRate))
-        }
-      }
-    }
+    def apply[Data, Weight, TypeClass <: Differentiable.Aux[Data, Weight]](data: Data, differentiable: TypeClass) = new StrongOps[Data, Weight, TypeClass] {
+      override val typeClassInstance: TypeClass = differentiable
 
-    implicit def tuple2EvalPatch[Data1, Delta1, Data2, Delta2]
-    (implicit patch1: Patch[Data1, Delta1], patch2: Patch[Data2, Delta2]) = {
-      new Patch[(Eval[_ <: Data1], Eval[_ <: Data2]), (Eval[_ <: Delta1], Eval[_ <: Delta2])] {
-        override def apply(data: (Eval[_ <: Data1], Eval[_ <: Data2]), delta: (Eval[_ <: Delta1], Eval[_ <: Delta2]), learningRate: Double): (Eval[_ <: Data1], Eval[_ <: Data2]) = {
-          (
-            Applicative[Eval].map2(data._1, delta._1)(patch1(_, _, learningRate)),
-            Applicative[Eval].map2(data._2, delta._2)(patch2(_, _, learningRate))
-            )
-        }
-      }
+      override def self = data
     }
   }
 
-  trait Patch[Data, Delta] {
-    def apply(data: Data, delta: Delta, learningRate: Double): Data
-  }
-
-  trait Pure {
-    _: Differentiable[_] =>
-
-    import Pure._
-
-    override final type Data = NeverChange.type
-    override final type Delta = NoPatch.type
-    override final val data = NeverChange.eval
-    override final val patch = NoPatch.evalPureInstances
-    override final val monoid = NoPatch.evalPureInstances
-
-  }
-
-  object Pure {
-
-    case object NeverChange {
-      val eval = Eval.now(this)
-    }
-
-    case object NoPatch {
-
-      final class NoPatchInstances[Data] extends Monoid[NoPatch.type] with Patch[Data, NoPatch.type] {
-        override def empty = NoPatch
-
-        override def combine(x: NoPatch.type, y: NoPatch.type) = NoPatch
-
-        override def apply(data: Data, delta: NoPatch.type, learningRate: Double) = data
-      }
-
-      val evalPureInstances = evalInstances[NeverChange.type]
-
-      def evalInstances[Data] = Eval.now(new NoPatchInstances[Data])
-
-      val eval = Eval.now(NoPatch)
-    }
-
-  }
-
-
-  final case class DifferentiableFunction[Input0, Output0, Weight, DeltaWeight]
-  (
-    override val data: Eval[_ <: Weight],
-    override val monoid: Eval[_ <: Monoid[DeltaWeight]],
-    override val patch: Eval[_ <: Patch[Weight, DeltaWeight]],
-    forwardFactory: DifferentiableFunction.ForwardPassFactory[Input0, Output0, Weight, DeltaWeight]
-  ) extends Differentiable[Input0 => Output0] {
-
-    type Data = Weight
-    type Delta = DeltaWeight
-
-    def forward[InputData, InputDelta](input: Differentiable.Aux[Input0, InputData, InputDelta]) = forwardFactory.apply.apply(this, input)
-  }
-
-  object DifferentiableFunction {
-
-    trait BackwardPass[+WeightDelta, +InputDelta] {
-      val deltaWeight: Eval[_ <: WeightDelta]
-      val deltaInput: Eval[_ <: InputDelta]
-    }
-
-    object BackwardPass {
-      def apply[WeightDelta, InputDelta](deltaWeight0: Eval[_ <: WeightDelta], deltaInput0: Eval[_ <: InputDelta]) = {
-        new BackwardPass[WeightDelta, InputDelta] {
-          override val deltaWeight = deltaWeight0
-          override val deltaInput = deltaInput0
-        }
-      }
-    }
-
-    trait ForwardPass[+Output, WeightDelta, InputDelta] {
-      type OutputData
-      type OutputDelta
-      val output: Differentiable.Aux[Output, OutputData, OutputDelta]
-
-      def backward(outputDifference: Eval[_ <: OutputDelta]): BackwardPass[WeightDelta, InputDelta]
-    }
-
-    object ForwardPass {
-
-      def apply[Output, WeightDelta, InputDelta, OutputData0, OutputDelta0](output0: Differentiable.Aux[Output, OutputData0, OutputDelta0], backward0: Eval[_ <: OutputDelta0] => BackwardPass[WeightDelta, InputDelta]) = {
-        new ForwardPass[Output, WeightDelta, InputDelta] {
-          override type OutputData = OutputData0
-          override type OutputDelta = OutputDelta0
-          override val output = output0
-
-          override def backward(outputDelta: Eval[_ <: OutputDelta]) = {
-            backward0(outputDelta)
-          }
-
-        }
-      }
-
-    }
-
-    def pure[Input0, Output0](forward: PureForward[Input0, Output0]): DifferentiableFunction[Input0, Output0, Pure.NeverChange.type, Pure.NoPatch.type] = {
-      DifferentiableFunction[Input0, Output0, Pure.NeverChange.type, Pure.NoPatch.type](Pure.NeverChange.eval, Pure.NoPatch.evalPureInstances, Pure.NoPatch.evalPureInstances, forward)
-    }
-
-    final class Factory[Input0, Output0] {
-      final class WithData[Weight, DeltaWeight]
-      (
-        val data: Eval[_ <: Weight],
-        val monoid: Eval[_ <: Monoid[DeltaWeight]],
-        val patch: Eval[_ <: Patch[Weight, DeltaWeight]]
-      ) {
-        type Forward = ForwardPassFactory[Input0, Output0, Weight, DeltaWeight]
-
-        def apply(f: this.type => Forward) = DifferentiableFunction[Input0, Output0, Weight, DeltaWeight](
-          data,
-          monoid,
-          patch,
-          f(this)
-        )
-      }
-
-      def apply[Weight, DeltaWeight]
-      (
-        data: Eval[_ <: Weight],
-        monoid: Eval[_ <: Monoid[DeltaWeight]],
-        patch: Eval[_ <: Patch[Weight, DeltaWeight]]
-      ) = new WithData[Weight, DeltaWeight](data, monoid, patch)
-
-    }
-
-    object Factory {
-      def apply[Input0, Output0] = new Factory[Input0, Output0]
-
-      type PureForward[Input, Output] = ForwardPassFactory[Input, Output, Pure.NeverChange.type, Pure.NoPatch.type]
-    }
-
-    trait ForwardPassFactory[Input0, Output0, Weight, DeltaWeight] {
-
-      def apply[InputData, InputDelta]: (DifferentiableFunction[Input0, Output0, Weight, DeltaWeight], Differentiable.Aux[Input0, InputData, InputDelta]) => ForwardPass[Output0, DeltaWeight, InputDelta]
-
-    }
-
-
-    def HCons[Head, Tail <: HList]() = DifferentiableFunction pure new PureForward[Head, Tail => Head :: Tail] {
-
-      import Pure._
-
-      override def apply[HeadData, HeadDelta] = { (_, head: Differentiable.Aux[Head, HeadData, HeadDelta]) =>
-
-        val partiallyApplied1 = DifferentiableFunction.Factory[Tail, Head :: Tail](head.data, head.monoid, head.patch) { factory =>
-          new factory.Forward {
-            override def apply[TailData, TailDelta] = { (partiallyApplied1, tail: Differentiable.Aux[Tail, TailData, TailDelta]) =>
-              ForwardPass(DifferentiableHCons[Head, Tail, HeadData, TailData, HeadDelta, TailDelta](head, tail), { outputDifference: Eval[_ <: (Eval[_ <: HeadDelta], Eval[_ <: TailDelta])] =>
-                // TODO: An `Eval` monad should check if `outputDifference` is a immediate value. If it is a immediate value, `flatMap` should compute immediately as well
-                BackwardPass(
-                  for {
-                    pair <- outputDifference
-                    headDelta <- pair._1
-                  } yield headDelta: HeadDelta,
-                  for {
-                    pair <- outputDifference
-                    tailDelta <- pair._2
-                  } yield tailDelta: TailDelta
-                )
-              })
-            }
-          }
-        }
-        ForwardPass(partiallyApplied1, { outputDifference: Eval[_ <: HeadDelta] =>
-          BackwardPass(NoPatch.eval, outputDifference)
-        })
-      }
-    }
-
-    def Head[Head, Tail <: HList]() = DifferentiableFunction pure new PureForward[Head :: Tail, Head] {
-      override def apply[InputData, InputDelta] = {
-        case l: DifferentiableHCons.Forward[Head, Tail, InputDelta] =>
-          l.forwardHead
-      }
-    }
-
-    def Tail[Head, Tail <: HList]() = DifferentiableFunction pure new PureForward[Head :: Tail, Tail] {
-      override def apply[InputData, InputDelta] = {
-        case l: DifferentiableHCons.Forward[Head, Tail, InputDelta] =>
-          l.forwardTail
-      }
-    }
-
-
-    def Substitute[A, B, C]() = DifferentiableFunction pure new PureForward[A => B => C, (A => B) => A => C] {
-
-      import Pure._
-
-      override def apply[FWeight, FDelta] = {
-        case (_, f: DifferentiableFunction[A, B => C, FWeight, FDelta]) =>
-          val partiallyApplied1 = DifferentiableFunction.Factory[A => B, A => C](f.data, f.monoid, f.patch) { factory =>
-            new factory.Forward {
-              override def apply[GWeight, GDelta] = {
-                case (partiallyApplied1, g: DifferentiableFunction[A, B, GWeight, GDelta]) =>
-                  val fgData = Eval.now(partiallyApplied1.data, g.data)
-                  val fgMonoid = Applicative[Eval].map2(f.monoid, g.monoid)(tuple2EvalMonoid(_, _))
-                  val fgPatch = Applicative[Eval].map2(f.patch, g.patch)(Patch.tuple2EvalPatch(_, _))
-                  val partiallyApplied2 = DifferentiableFunction.Factory[A, C](fgData, fgMonoid, fgPatch) { factory =>
-                    new factory.Forward {
-                      override def apply[AData, ADelta] = { (partiallyApplied2, a: Differentiable.Aux[A, AData, ADelta]) =>
-
-                        val forwardPassF = f.forward(a)
-                        val forwardPassG = g.forward(a)
-                        val b = forwardPassG.output
-                        forwardPassF.output match {
-                          case fa: DifferentiableFunction[B, C, _, _] =>
-                            val forwardPassFA = fa.forward(b)
-                            val backward = { outputDifference: Eval[_ <: forwardPassFA.OutputDelta] =>
-                              val backwardPassFA = forwardPassFA.backward(outputDifference)
-                              val backwardPassG = forwardPassG.backward(backwardPassFA.deltaInput)
-                              val backwardPassF = forwardPassF.backward(backwardPassFA.deltaWeight)
-                              val deltaA = Applicative[Eval].map3(a.monoid, backwardPassF.deltaInput, backwardPassG.deltaInput)(_.combine(_, _))
-                              val deltaFG: Eval[(Eval[_ <: FDelta], Eval[_ <: GDelta])] = Eval.now((backwardPassF.deltaWeight, backwardPassG.deltaWeight))
-                              BackwardPass(deltaFG, deltaA)
-                            }
-                            ForwardPass(forwardPassFA.output, backward)
-                        }
-                      }
-                    }
-                  }
-                  ForwardPass(partiallyApplied2, { outputDifference: Eval[_ <: (Eval[_ <: FDelta], Eval[_ <: GDelta])] =>
-                    // TODO: An `Eval` monad should check if `outputDifference` is a immediate value. If it is a immediate value, `flatMap` should compute immediately as well
-
-                    BackwardPass(
-                      for {
-                        pair <- outputDifference
-                        fDelta <- pair._1
-                      } yield fDelta: FDelta,
-                      for {
-                        pair <- outputDifference
-                        gDelta <- pair._2
-                      } yield gDelta: GDelta
-                    )
-                  })
-              }
-            }
-          }
-
-          ForwardPass(partiallyApplied1, { outputDifference: Eval[_ <: FDelta] =>
-            BackwardPass(NoPatch.eval, outputDifference)
-          })
-      }
-
-    }
-
-    def Constant[Value, Ignore]() = DifferentiableFunction pure new PureForward[Value, Ignore => Value] {
-
-      import Pure._
-
-      override def apply[ValueData, ValueDelta] = { (_, value: Differentiable.Aux[Value, ValueData, ValueDelta]) =>
-        val partiallyApplied1 = DifferentiableFunction.Factory[Ignore, Value](value.data, value.monoid, value.patch) { factory =>
-          new factory.Forward {
-            override def apply[IgnoreData, IgnoreDelta] = { (_, ignore: Differentiable.Aux[Ignore, IgnoreData, IgnoreDelta]) =>
-              ForwardPass(value, { outputDifference: Eval[_ <: ValueDelta] =>
-                BackwardPass(outputDifference, ignore.monoid.map(_.empty))
-              })
-            }
-          }
-        }
-        ForwardPass(partiallyApplied1, { outputDifference: Eval[_ <: ValueDelta] =>
-          BackwardPass(NoPatch.eval, outputDifference)
-        })
-      }
-    }
-
-    def Id[A]() = DifferentiableFunction pure new PureForward[A, A] {
-
-      import Pure._
-
-      override def apply[InputData, InputDelta] = { (_, a) =>
-        ForwardPass(a, { delta: Eval[_ <: InputDelta] =>
-          BackwardPass(NoPatch.eval, delta)
-        })
-
-      }
-    }
-
-    def Compose[A, B, C]() = DifferentiableFunction pure new PureForward[B => C, (A => B) => A => C] {
-
-      import Pure._
-
-      override def apply[FWeight, FDelta] = {
-        case (_, f: DifferentiableFunction[B, C, FWeight, FDelta]) =>
-          val partiallyApplied1 = DifferentiableFunction.Factory[A => B, A => C](f.data, f.monoid, f.patch) {
-            factory =>
-              new factory.Forward {
-                override def apply[GWeight, GDelta] = {
-                  case (partiallyApplied1, g: DifferentiableFunction[A, B, GWeight, GDelta]) =>
-                    val fgData = Eval.now(partiallyApplied1.data, g.data)
-                    val fgMonoid = Applicative[Eval].map2(f.monoid, g.monoid)(tuple2EvalMonoid(_, _))
-                    val fgPatch = Applicative[Eval].map2(f.patch, g.patch)(Patch.tuple2EvalPatch(_, _))
-                    val partiallyApplied2 = DifferentiableFunction.Factory[A, C](fgData, fgMonoid, fgPatch) { factory =>
-                      new factory.Forward {
-                        override def apply[AData, ADelta] = { (partiallyApplied2, a: Differentiable.Aux[A, AData, ADelta]) =>
-                          val forwardPassG = g.forward(a)
-                          val b = forwardPassG.output
-                          val forwardPassF = f.forward(b)
-                          val backward = { outputDifference: Eval[_ <: forwardPassF.OutputDelta] =>
-                            val backwardPassF = forwardPassF.backward(outputDifference)
-                            val backwardPassG = forwardPassG.backward(backwardPassF.deltaInput)
-                            val deltaFG: Eval[(Eval[_ <: FDelta], Eval[_ <: GDelta])] = Eval.now((backwardPassF.deltaWeight, backwardPassG.deltaWeight))
-                            BackwardPass[(Eval[_ <: FDelta], Eval[_ <: GDelta]), ADelta](deltaFG, backwardPassG.deltaInput)
-                          }
-                          val c = forwardPassF.output
-                          ForwardPass[C, (Eval[_ <: FDelta], Eval[_ <: GDelta]), ADelta, forwardPassF.OutputData, forwardPassF.OutputDelta](c, backward)
-                        }
-                      }: factory.Forward
-                    }
-                    ForwardPass(partiallyApplied2, { outputDifference: Eval[_ <: (Eval[_ <: FDelta], Eval[_ <: GDelta])] =>
-                      // TODO: An `Eval` monad should check if `outputDifference` is a immediate value. If it is a immediate value, `flatMap` should compute immediately as well
-                      BackwardPass(
-                        for {
-                          pair <- outputDifference
-                          fDelta <- pair._1
-                        } yield fDelta: FDelta,
-                        for {
-                          pair <- outputDifference
-                          gDelta <- pair._2
-                        } yield gDelta: GDelta
-                      )
-                    })
-                }
-              }
-          }
-          ForwardPass(partiallyApplied1, { outputDifference: Eval[_ <: FDelta] =>
-            BackwardPass(NoPatch.eval, outputDifference)
-          })
-      }
-    }
-
-
-    def Flip[A, B, C]() = DifferentiableFunction pure new PureForward[A => B => C, B => A => C] {
-
-      import Pure._
-
-      override def apply[FWeight, FDelta] = {
-        case (_, f: DifferentiableFunction[A, B => C, FWeight, FDelta]) =>
-          val partiallyApplied1 = DifferentiableFunction.Factory[B, A => C](f.data, f.monoid, f.patch) { factory =>
-            new factory.Forward {
-              override def apply[BData, BDelta] = { (partiallyApplied1, b: Differentiable.Aux[B, BData, BDelta]) =>
-                val fgData = Eval.now((partiallyApplied1.data, b.data))
-                val fgMonoid = Applicative[Eval].map2(f.monoid, b.monoid)(tuple2EvalMonoid(_, _))
-                val fgPatch = Applicative[Eval].map2(f.patch, b.patch)(Patch.tuple2EvalPatch(_, _))
-                val partiallyApplied2 = DifferentiableFunction.Factory[A, C](fgData, fgMonoid, fgPatch) { factory =>
-                  new factory.Forward {
-                    override def apply[AData, ADelta] = { (partiallyApplied2, a: Differentiable.Aux[A, AData, ADelta]) =>
-                      val forwardPassF = f.forward(a)
-                      forwardPassF.output match {
-                        case fa: DifferentiableFunction[B, C, _, _] =>
-                          val forwardPassFA = fa.forward(b)
-                          val backward = { outputDifference: Eval[_ <: forwardPassFA.OutputDelta] =>
-                            val backwardPassFA = forwardPassFA.backward(outputDifference)
-                            val backwardPassF = forwardPassF.backward(backwardPassFA.deltaWeight)
-                            val deltaFG: Eval[(Eval[_ <: FDelta], Eval[_ <: BDelta])] = Eval.now((backwardPassF.deltaWeight, backwardPassFA.deltaInput))
-                            BackwardPass[(Eval[_ <: FDelta], Eval[_ <: BDelta]), ADelta](deltaFG, backwardPassF.deltaInput)
-                          }
-                          val c = forwardPassFA.output
-                          ForwardPass[C, (Eval[_ <: FDelta], Eval[_ <: BDelta]), ADelta, forwardPassFA.OutputData, forwardPassFA.OutputDelta](c, backward)
-                      }
-                    }
-                  }
-                }
-
-                ForwardPass(partiallyApplied2, { outputDifference: Eval[_ <: (Eval[_ <: FDelta], Eval[_ <: BDelta])] =>
-                  // TODO: An `Eval` monad should check if `outputDifference` is a immediate value. If it is a immediate value, `flatMap` should compute immediately as well
-                  BackwardPass(
-                    for {
-                      pair <- outputDifference
-                      fDelta <- pair._1
-                    } yield fDelta: FDelta,
-                    for {
-                      pair <- outputDifference
-                      gDelta <- pair._2
-                    } yield gDelta: BDelta
-                  )
-                })
-
-              }
-            }
-          }
-
-          ForwardPass(partiallyApplied1, { outputDifference: Eval[_ <: FDelta] =>
-            BackwardPass(NoPatch.eval, outputDifference)
-          })
-      }
-    }
-
-    def Duplicate[A, B]() = DifferentiableFunction pure new PureForward[A => A => B, A => B] {
-
-      import Pure._
-
-      override def apply[FWeight, FDelta] = {
-        case (_, f: DifferentiableFunction[A, A => B, FWeight, FDelta]) =>
-          val partiallyApplied1 = DifferentiableFunction.Factory[A, B](f.data, f.monoid, f.patch) { factory =>
-            new factory.Forward {
-              override def apply[AData, ADelta] = { (partiallyApplied1, a: Differentiable.Aux[A, AData, ADelta]) =>
-
-                val forwardPassF = f.forward(a)
-                forwardPassF.output match {
-                  case fa: DifferentiableFunction[A, B, _, _] =>
-                    val forwardPassFA = fa.forward(a)
-                    val backward = { outputDifference: Eval[_ <: forwardPassFA.OutputDelta] =>
-                      val backwardPassFA = forwardPassFA.backward(outputDifference)
-                      val backwardPassF = forwardPassF.backward(backwardPassFA.deltaWeight)
-                      BackwardPass[FDelta, ADelta](backwardPassF.deltaWeight, Applicative[Eval].map3(a.monoid, backwardPassFA.deltaInput, backwardPassF.deltaInput)(_.combine(_, _)))
-                    }
-                    val b = forwardPassFA.output
-                    ForwardPass[B, FDelta, ADelta, forwardPassFA.OutputData, forwardPassFA.OutputDelta](b, backward)
-                }
-              }
-            }
-          }
-
-          ForwardPass(partiallyApplied1, {
-            outputDifference: Eval[_ <: FDelta] =>
-              BackwardPass(NoPatch.eval, outputDifference)
-          })
-
-
-      }
-
-    }
-
-    def Freeze[A]() = DifferentiableFunction pure new PureForward[A, A] {
-
-      import Pure._
-
-      override def apply[InputData, InputDelta] = { (_, a) =>
-        ForwardPass(a, { delta: Eval[_ <: InputDelta] =>
-          BackwardPass(NoPatch.eval, a.monoid.map(_.empty))
-        })
-
-      }
-    }
-
-
-  }
-
-  object DifferentiableHNil extends Differentiable[HNil] with Pure
-
-  object DifferentiableHCons {
-
-    import Pure._
-    import DifferentiableFunction._
-
-    sealed trait Forward[Head, Tail <: HList, Delta0] extends Differentiable[Head :: Tail] {
-      override type Delta = Delta0
-
-      private[Differentiable] def forwardHead: ForwardPass[Head, NoPatch.type, Delta]
-
-      private[Differentiable] def forwardTail: ForwardPass[Tail, NoPatch.type, Delta]
-    }
-
-  }
-
-  final case class DifferentiableHCons[H, T <: HList, HeadData, TailData, HeadDelta, TailDelta]
-  (
-    head: Differentiable.Aux[H, HeadData, HeadDelta],
-    tail: Differentiable.Aux[T, TailData, TailDelta]
-  ) extends DifferentiableHCons.Forward[H, T, (Eval[_ <: HeadDelta], Eval[_ <: TailDelta])] {
-
-    import Pure._
-    import DifferentiableFunction._
-
-    private[Differentiable] def forwardHead: ForwardPass[H, NoPatch.type, Delta] = {
-      ForwardPass(head, { headDelta: Eval[_ <: HeadDelta] =>
-        BackwardPass[NoPatch.type, Delta](
-          NoPatch.eval,
-          Eval.now(headDelta, tail.monoid.map(_.empty))
-        )
-      })
-    }
-
-    private[Differentiable] def forwardTail: ForwardPass[T, NoPatch.type, Delta] = {
-      ForwardPass(tail, { tailDelta: Eval[_ <: TailDelta] =>
-        BackwardPass[NoPatch.type, Delta](
-          NoPatch.eval,
-          Eval.now((head.monoid.map(_.empty), tailDelta))
-        )
-      })
-    }
-
-    override type Data = (Eval[_ <: HeadData], Eval[_ <: TailData])
-    override val data: Eval[_ <: Data] = Eval.now(head.data, tail.data)
-    override val monoid = Applicative[Eval].map2(head.monoid, tail.monoid)(tuple2EvalMonoid(_, _))
-    override val patch = Applicative[Eval].map2(head.patch, tail.patch)(Patch.tuple2EvalPatch(_, _))
-  }
+  type WeakOps[+A] = StrongOps[_, _, _] @@ (_ <: A)
 
   @typeclass
   trait Freezing[F[_]] {
@@ -574,41 +83,295 @@ object Differentiable {
   trait PointfreeFreezing[F[_]] extends Pointfree[F] with Freezing[F]
 
 
-  trait DifferentiableInstances extends PointfreeFreezing[Differentiable] {
+  case object NeverChange {
+    val eval = Eval.now(this)
 
-    import com.thoughtworks.Differentiable.DifferentiableFunction._
+    object NeverChangeInstances extends Monoid[NoPatch.type] with ((NeverChange.type, NoPatch.type, Double) => NeverChange.type) {
+      override def empty = NoPatch
 
-    override def hnil = DifferentiableHNil
+      override def combine(x: NoPatch.type, y: NoPatch.type) = NoPatch
 
-    override def hcons[Head, Tail <: HList] = HCons[Head, Tail]()
-
-    override def head[Head, Tail <: HList] = DifferentiableFunction.Head[Head, Tail]()
-
-    override def tail[Head, Tail <: HList] = DifferentiableFunction.Tail[Head, Tail]()
-
-    override def ap[A, B](ff: Differentiable[(A) => B])(fa: Differentiable[A]): Differentiable[B] = {
-      ff match {
-        case ff: DifferentiableFunction[A, B, _, _] =>
-          ff.forward(fa: com.thoughtworks.Differentiable.Aux[A, _, _]).output
-      }
+      override def apply(data: NeverChange.type, delta: NoPatch.type, learningRate: Double) = data
     }
 
-    override def substitute[A, B, C] = Substitute[A, B, C]()
+  }
 
-    override def id[A] = Id[A]()
+  case object NoPatch
 
-    override def constant[A, B] = Constant[A, B]()
+  type Patch[Data, Delta] = (Data, Delta, Double) => Data
 
-    override def compose[A, B, C] = Compose[A, B, C]()
 
-    override def flip[A, B, C] = Flip[A, B, C]()
+  final case class DifferentiableFunction
+  [
+  Weight, DeltaWeight,
+  Input, InputDelta, InputDifferentiable <: Differentiable.Aux[Input, InputDelta],
+  Output, OutputDelta, OutputDifferentiable <: Differentiable.Aux[Output, OutputDelta]
+  ]
+  (
+    monoid: Monoid[DeltaWeight],
+    patch: (Weight, DeltaWeight, Double) => Weight,
+    forward: (
+      Weight,
+        Monoid[DeltaWeight],
+        Patch[Weight, DeltaWeight],
+        Input, InputDifferentiable
+      ) => DifferentiableFunction.ForwardPass[DeltaWeight, InputDelta, Output, OutputDelta, OutputDifferentiable]
+  ) extends Differentiable[Weight] {
+    _: Differentiable.Aux[Weight, DeltaWeight] =>
 
-    override def duplicate[A, B] = Duplicate[A, B]()
+    override type Delta = DeltaWeight
 
-    override def freeze[A] = Freeze[A]()
+    def forward(weight: Weight, input: Input, inputDifferentiable: InputDifferentiable): DifferentiableFunction.ForwardPass[DeltaWeight, InputDelta, Output, OutputDelta, OutputDifferentiable] = {
+      forward.apply(weight, monoid, patch, input, inputDifferentiable)
+    }
 
-    override def curry2[A, B, R]: Differentiable[((A, B) => R) => A => B => R] = ???
+  }
 
+  object DifferentiableFunction {
+
+    def partiallyForward[
+    Weight <: HList, Delta <: HList,
+    Input, InputDelta, InputDifferentiable <: Differentiable.Aux[Input, InputDelta],
+    Input2, InputDelta2, InputDifferentiable2 <: Differentiable.Aux[Input2, InputDelta2],
+    Output, OutputDelta, OutputDifferentiable <: Differentiable.Aux[Output, OutputDelta]
+    ]
+    (
+      forward: InputDifferentiable => (Input :: Weight, Monoid[InputDelta :: Delta], Patch[Input :: Weight, InputDelta :: Delta], Input2, InputDifferentiable2) => ForwardPass[InputDelta :: Delta, InputDelta2, Output, OutputDelta, OutputDifferentiable]
+    )(
+      weight: Weight,
+      monoid: Monoid[Delta],
+      patch: Patch[Weight, Delta],
+      input: Input,
+      inputDifferentiable: InputDifferentiable
+    ) = {
+      ForwardPass[Delta, InputDelta, Input :: Weight, InputDelta :: Delta,
+        DifferentiableFunction[Input :: Weight, InputDelta :: Delta, Input2, InputDelta2, InputDifferentiable2, Output, OutputDelta, OutputDifferentiable]](
+        input :: weight,
+        DifferentiableFunction(
+          HConsMonoid(inputDifferentiable.monoid, monoid),
+          HConsPatch(inputDifferentiable.patch, patch),
+          forward(inputDifferentiable)
+        ), { hlistDelta =>
+          BackwardPass(hlistDelta.tail, hlistDelta.head)
+        }
+      )
+    }
+
+    final case class BackwardPass[WeightDelta, InputDelta](weightDelta: WeightDelta, inputDelta: InputDelta)
+
+    final case class ForwardPass
+    [WeightDelta, InputDelta, Output, OutputDelta, OutputDifferentiable <: Differentiable.Aux[Output, OutputDelta]]
+    (output: Output, outputDifferentiable: OutputDifferentiable, backward: OutputDelta => BackwardPass[WeightDelta, InputDelta])
+
+    def head[HeadData, HeadDelta, HeadDifferentiable <: Differentiable.Aux[HeadData, HeadDelta], TailData <: HList, TailDelta <: HList, TailDifferentiable <: Differentiable.Aux[TailData, TailDelta]] = {
+      DifferentiableFunction(HNilMonoid, HNilPatch, { (weight: HNil, monoid: Monoid[HNil], patch: Patch[HNil, HNil], hconsData: HeadData :: TailData, hconsDifferentiable: DifferentiableHCons[HeadData, HeadDelta, HeadDifferentiable, TailData, TailDelta, TailDifferentiable]) =>
+        ForwardPass(hconsData.head, hconsDifferentiable.headDifferentiable, { headDelta: HeadDelta =>
+          BackwardPass(HNil: HNil, headDelta :: hconsDifferentiable.tailDifferentiable.monoid.empty)
+        })
+      })
+    }
+
+    def tail[HeadData, HeadDelta, HeadDifferentiable <: Differentiable.Aux[HeadData, HeadDelta], TailData <: HList, TailDelta <: HList, TailDifferentiable <: Differentiable.Aux[TailData, TailDelta]] = {
+      DifferentiableFunction(HNilMonoid, HNilPatch, { (weight: HNil, monoid: Monoid[HNil], patch: Patch[HNil, HNil], hconsData: HeadData :: TailData, hconsDifferentiable: DifferentiableHCons[HeadData, HeadDelta, HeadDifferentiable, TailData, TailDelta, TailDifferentiable]) =>
+        ForwardPass(hconsData.tail, hconsDifferentiable.tailDifferentiable, { tailDelta: TailDelta =>
+          BackwardPass(HNil: HNil, hconsDifferentiable.headDifferentiable.monoid.empty :: tailDelta)
+        })
+      })
+    }
+
+    def hcons[HeadData, HeadDelta, HeadDifferentiable <: Differentiable.Aux[HeadData, HeadDelta], TailData <: HList, TailDelta <: HList, TailDifferentiable <: Differentiable.Aux[TailData, TailDelta]] = {
+      DifferentiableFunction(HNilMonoid, HNilPatch, DifferentiableFunction.partiallyForward { headDifferentiable: HeadDifferentiable =>
+        (
+          weight: HeadData :: HNil,
+          monoid: Monoid[HeadDelta :: HNil],
+          patch: Patch[HeadData :: HNil, HeadDelta :: HNil],
+          tailData: TailData,
+          tailDifferentiable: TailDifferentiable
+        ) =>
+          val differentiableHCons = DifferentiableHCons[HeadData, HeadDelta, HeadDifferentiable, TailData, TailDelta, TailDifferentiable](headDifferentiable, tailDifferentiable)
+          ForwardPass(weight.head :: tailData, differentiableHCons, { (hconsDelta: HeadDelta :: TailDelta) =>
+            BackwardPass(hconsDelta.head :: HNil, hconsDelta.tail)
+          })
+      })
+    }
+
+    def constant[AData, ADelta, ADifferentiable <: Differentiable.Aux[AData, ADelta], BData, BDelta, BDifferentiable <: Differentiable.Aux[BData, BDelta]] = {
+      DifferentiableFunction(HNilMonoid, HNilPatch, DifferentiableFunction.partiallyForward { aDifferentiable: ADifferentiable =>
+        (
+          weight: AData :: HNil,
+          monoid: Monoid[ADelta :: HNil],
+          patch: Patch[AData :: HNil, ADelta :: HNil],
+          bData: BData,
+          bDifferentiable: BDifferentiable
+        ) =>
+          val bMonoid = bDifferentiable.monoid
+          ForwardPass(weight.head, aDifferentiable, { aDelta: ADelta =>
+            BackwardPass(aDelta :: HNil, bMonoid.empty)
+          })
+      })
+    }
+
+    def id[AData, ADelta, ADifferentiable <: Differentiable.Aux[AData, ADelta]] = {
+      DifferentiableFunction(HNilMonoid, HNilPatch, { (weight: HNil, monoid: Monoid[HNil], patch: Patch[HNil, HNil], aData: AData, aDifferentiable: ADifferentiable) =>
+        ForwardPass(aData, aDifferentiable, { aDelta: ADelta =>
+          BackwardPass(HNil: HNil, aDelta)
+        })
+      })
+    }
+
+    def freeze[AData, ADelta, ADifferentiable <: Differentiable.Aux[AData, ADelta]] = {
+      DifferentiableFunction(HNilMonoid, HNilPatch, { (weight: HNil, monoid: Monoid[HNil], patch: Patch[HNil, HNil], aData: AData, aDifferentiable: ADifferentiable) =>
+        val aMonoid = aDifferentiable.monoid
+        ForwardPass(aData, aDifferentiable, { aDelta: ADelta =>
+          BackwardPass(HNil: HNil, aMonoid.empty)
+        })
+      })
+    }
+
+    def substitute[
+    FWeight, FDelta,
+    FAWeight, FADelta,
+    GWeight, GDelta,
+    AData, ADelta, ADifferentiable <: Differentiable.Aux[AData, ADelta],
+    BData, BDelta, BDifferentiable <: Differentiable.Aux[BData, BDelta],
+    CData, CDelta, CDifferentiable <: Differentiable.Aux[CData, CDelta]
+    ] = {
+      type FADifferentiable = DifferentiableFunction[FAWeight, FADelta, BData, BDelta, BDifferentiable, CData, CDelta, CDifferentiable]
+      type FDifferentiable = DifferentiableFunction[FWeight, FDelta, AData, ADelta, ADifferentiable, FAWeight, FADelta, FADifferentiable]
+      type GDifferentiable = DifferentiableFunction[GWeight, GDelta, AData, ADelta, ADifferentiable, BData, BDelta, BDifferentiable]
+      DifferentiableFunction(HNilMonoid, HNilPatch, DifferentiableFunction.partiallyForward {
+        fDifferentiable: FDifferentiable =>
+          DifferentiableFunction.partiallyForward { gDifferentiable: GDifferentiable =>
+            (
+              weight: GWeight :: FWeight :: HNil,
+              monoid: Monoid[GDelta :: FDelta :: HNil],
+              patch: Patch[GWeight :: FWeight :: HNil, GDelta :: FDelta :: HNil],
+              aData: AData,
+              aDifferentiable: ADifferentiable
+            ) =>
+              val ForwardPass(faWeight, faDifferentiable, fBackward) = fDifferentiable.forward(weight.select[FWeight], aData, aDifferentiable)
+              val ForwardPass(bWeight, bDifferentiable, gBackward) = gDifferentiable.forward(weight.select[GWeight], aData, aDifferentiable)
+              val ForwardPass(cData, cDifferentiable, faBackward) = faDifferentiable.forward(faWeight, bWeight, bDifferentiable)
+              ForwardPass(cData, cDifferentiable, { cDelta: CDelta =>
+                val BackwardPass(faDelta, bDelta) = faBackward(cDelta)
+                val BackwardPass(fWeight, aDelta1) = fBackward(faDelta)
+                val BackwardPass(gWeight, aDelta2) = gBackward(bDelta)
+                BackwardPass(gWeight :: fWeight :: HNil, aDifferentiable.monoid.combine(aDelta1, aDelta2))
+              })
+
+          }
+      })
+    }
+  }
+
+  final case class HConsPatch[Head, Tail <: HList, HeadDelta, TailDelta <: HList]
+  (headPatch: Patch[Head, HeadDelta], tailPatch: Patch[Tail, TailDelta])
+    extends Patch[Head :: Tail, HeadDelta :: TailDelta] {
+    override def apply(data: Head :: Tail, delta: HeadDelta :: TailDelta, learningRate: Double) = {
+      headPatch(data.head, delta.head, learningRate) :: tailPatch(data.tail, delta.tail, learningRate)
+    }
+  }
+
+  final case class HConsMonoid[Head, Tail <: HList](headMonoid: Monoid[Head], tailMonoid: Monoid[Tail]) extends Monoid[Head :: Tail] {
+    override def empty = headMonoid.empty :: tailMonoid.empty
+
+    override def combine(x: Head :: Tail, y: Head :: Tail) = {
+      headMonoid.combine(x.head, y.head) :: tailMonoid.combine(x.tail, y.tail)
+    }
+  }
+
+  val HNilPatch = { (data: HNil, delta: HNil, learningRate: Double) =>
+    HNil
+  }
+
+  object HNilMonoid extends Monoid[HNil] {
+    override def empty = HNil
+
+    override def combine(x: HNil, y: HNil) = HNil
+  }
+
+  final case class DifferentiableHCons[HeadData, HeadDelta, HeadDifferentiable <: Differentiable.Aux[HeadData, HeadDelta], TailData <: HList, TailDelta <: HList, TailDifferentiable <: Differentiable.Aux[TailData, TailDelta]]
+  (
+    headDifferentiable: HeadDifferentiable,
+    tailDifferentiable: TailDifferentiable
+  ) extends Differentiable[HeadData :: TailData] {
+    override type Delta = HeadDelta :: TailDelta
+
+    override def monoid: Monoid[HeadDelta :: TailDelta] = HConsMonoid(headDifferentiable.monoid, tailDifferentiable.monoid)
+
+    override def patch: Patch[HeadData :: TailData, HeadDelta :: TailDelta] = HConsPatch(headDifferentiable.patch, tailDifferentiable.patch)
+  }
+
+  case object DifferentialbeHNil extends Differentiable[HNil] {
+    override type Delta = HNil
+
+    override def monoid = HNilMonoid
+
+    override def patch = HNilPatch
+  }
+
+  trait DifferentiableInstances extends PointfreeFreezing[WeakOps] {
+
+    override def hnil = {
+      DifferentialbeHNil.pureOps.erase[HNil]
+    }
+
+    override def hcons[Head, Tail <: HList] = {
+      DifferentiableFunction.hcons.pureOps.erase[Head => Tail => Head :: Tail]
+    }
+
+    override def head[Head, Tail <: HList] = {
+      DifferentiableFunction.head.pureOps.erase[Head :: Tail => Head]
+
+    }
+
+    override def tail[Head, Tail <: HList] = {
+      DifferentiableFunction.tail.pureOps.erase[Head :: Tail => Tail]
+    }
+
+    override def substitute[A, B, C] = {
+      DifferentiableFunction.substitute.pureOps.erase[((A) => (B) => C) => ((A) => B) => (A) => C]
+    }
+
+    override def id[A] = {
+      DifferentiableFunction.id.pureOps.erase[A => A]
+    }
+
+    override def constant[A, B] = {
+      DifferentiableFunction.constant.pureOps.erase[A => B => A]
+
+    }
+
+    override def freeze[A] = {
+      DifferentiableFunction.freeze.pureOps.erase[A => A]
+    }
+
+    override def ap[A, R](ff: WeakOps[A => R])(fa: WeakOps[A]): WeakOps[R] = {
+      type StrongFunctionAst = Ast forSome {
+        type Weight
+        type Delta
+        type Input
+        type InputDelta
+        type InputDifferentiable <: Differentiable.Aux[Input, InputDelta]
+        type Output
+        type OutputDelta
+        type OutputDifferentiable <: Differentiable.Aux[Output, OutputDelta]
+        type Ast <: StrongOps[Weight, Delta, DifferentiableFunction[Weight, Delta, Input, InputDelta, InputDifferentiable, Output, OutputDelta, OutputDifferentiable]]
+      }
+      def forceAp[
+      Weight, DeltaWeight,
+      Input, InputDelta, InputDifferentiable <: Differentiable.Aux[Input, InputDelta],
+      Output, OutputDelta, OutputDifferentiable <: Differentiable.Aux[Output, OutputDelta]
+      ](
+         strongFF: StrongOps[Weight, DeltaWeight, DifferentiableFunction[Weight, DeltaWeight, Input, InputDelta, InputDifferentiable, Output, OutputDelta, OutputDifferentiable]],
+         weakInput: WeakOps[A]
+       ) = {
+        val input = weakInput.asInstanceOf[StrongOps[Input, InputDelta, InputDifferentiable]]
+        val forwardPass = strongFF.typeClassInstance.forward(strongFF.self, input.self, input.typeClassInstance)
+        tag[R].apply(StrongOps[Output, OutputDelta, OutputDifferentiable](forwardPass.output, forwardPass.outputDifferentiable))
+      }
+      forceAp(ff.asInstanceOf[StrongFunctionAst], fa)
+    }
   }
 
   object DifferentiableInstances extends DifferentiableInstances
