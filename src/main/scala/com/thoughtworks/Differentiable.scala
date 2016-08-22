@@ -346,6 +346,14 @@ object Differentiable {
       DifferentiableFunction.freeze.pureOps.erase[A => A]
     }
 
+    override def fromHListFunction2[A, B, R] = {
+      DifferentiableFunction.id.pureOps.erase[(A :: B :: HNil => R) => (A, B) => R]
+    }
+
+    override def toHListFunction2[A, B, R] = {
+      DifferentiableFunction.id.pureOps.erase[((A, B) => R) => A :: B :: HNil => R]
+    }
+
     override def ap[A, R](ff: WeakOps[A => R])(fa: WeakOps[A]): WeakOps[R] = {
       type StrongFunctionAst = Ast forSome {
         type Weight
