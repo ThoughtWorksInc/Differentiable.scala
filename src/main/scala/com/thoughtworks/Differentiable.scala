@@ -2,10 +2,11 @@ package com.thoughtworks
 
 import scala.language.existentials
 import cats.{Eval, Monoid}
-import com.thoughtworks.Differentiable.StrongOps
+import com.dongxiguo.fastring.Fastring
+import com.dongxiguo.fastring.Fastring.Implicits._
 import shapeless.tag._
 import shapeless.{::, HList, HNil, tag}
-import simulacrum.typeclass
+import simulacrum.{op, typeclass}
 
 import scala.language.higherKinds
 import scala.language.implicitConversions
@@ -15,21 +16,46 @@ import scala.language.implicitConversions
   */
 
 @typeclass
-trait Differentiable[Data] extends AnyRef {
+trait Differentiable[Data0] extends AnyRef {
+  // Workaround for https://github.com/mpilquist/simulacrum/issues/65
+  typeClassInstance =>
+
+  import Differentiable._
+
+  type Data = Data0
+
   type Delta
 
   def monoid: Monoid[Delta]
 
-  def patch: Differentiable.Patch[Data, Delta]
+  def patch: Differentiable.Patch[Data0, Delta]
 
-  final def applyPatch(data: Data, delta: Delta, learningRate: Double) = patch(data, delta, learningRate)
+  def toFastring: ToFastring[Data]
 
-  final def pureOps(implicit dataConstrait: HNil.type <:< Data) = {
-    new StrongOps[Data, Delta, this.type] {
-      override def self = dataConstrait(HNil)
+  final def applyPatch(data: Data0, delta: Delta, learningRate: Double) = {
+    patch(data, delta, learningRate)
+  }
 
+  final def pureOps[A](implicit dataConstrait: HNil.type <:< Data0) = {
+    new Differentiable.AllOps[Data0] with Differentiable.WeakOps[A] {
+      override val self = dataConstrait(HNil)
       override val typeClassInstance: Differentiable.this.type = Differentiable.this
     }
+  }
+
+  @inline
+  final def forward[Input, Output, OutputDelta, OutputDifferentiable <: Differentiable.Aux[Output, OutputDelta]]
+  (weight: Data0, input: Input, inputDifferentiable: Differentiable[Input])
+  (implicit constraint: typeClassInstance.type <:< DifferentiableFunction[Data0, Delta, Input, inputDifferentiable.Delta, _ >: inputDifferentiable.type, Output, OutputDelta, OutputDifferentiable])
+  : DifferentiableFunction.ForwardPass[Delta, inputDifferentiable.Delta, Output, OutputDelta, OutputDifferentiable] = {
+    val f = constraint(this)
+    f.forward.apply(weight, f.monoid, f.patch, f.toFastring, input, inputDifferentiable)
+  }
+
+  @inline
+  @op("toFastring")
+  private[Differentiable] final def toFastringOp(data: Data0): Fastring = {
+    toFastring.apply(data)
   }
 
 }
@@ -42,24 +68,15 @@ object Differentiable {
 
   import PointfreeFreezing.ops._
 
-  trait StrongOps[Data, Weight, +TypeClass <: Differentiable.Aux[Data, Weight]] extends AllOps[Data] {
-    def erase[A]: WeakOps[A] = {
-      tag[A].apply[StrongOps[_, _, _]](this)
-    }
+  type ToFastring[Data] = Data => Fastring
 
-    override val typeClassInstance: TypeClass
+  type StrongOps[Data, Weight, +TypeClass <: Differentiable.Aux[Data, Weight]] = AllOps[Data] with WeakOps[_] {
+    val typeClassInstance: TypeClass
   }
 
-  object StrongOps {
-
-    def apply[Data, Weight, TypeClass <: Differentiable.Aux[Data, Weight]](data: Data, differentiable: TypeClass) = new StrongOps[Data, Weight, TypeClass] {
-      override val typeClassInstance: TypeClass = differentiable
-
-      override def self = data
-    }
+  trait WeakOps[+A] {
+    _: AllOps[_] =>
   }
-
-  type WeakOps[+A] = StrongOps[_, _, _] @@ (_ <: A)
 
   @typeclass
   trait Freezing[F[_]] {
@@ -110,21 +127,17 @@ object Differentiable {
   (
     monoid: Monoid[DeltaWeight],
     patch: (Weight, DeltaWeight, Double) => Weight,
+    toFastring: ToFastring[Weight],
     forward: (
       Weight,
         Monoid[DeltaWeight],
         Patch[Weight, DeltaWeight],
+        ToFastring[Weight],
         Input, InputDifferentiable
       ) => DifferentiableFunction.ForwardPass[DeltaWeight, InputDelta, Output, OutputDelta, OutputDifferentiable]
   ) extends Differentiable[Weight] {
     _: Differentiable.Aux[Weight, DeltaWeight] =>
-
     override type Delta = DeltaWeight
-
-    def forward(weight: Weight, input: Input, inputDifferentiable: InputDifferentiable): DifferentiableFunction.ForwardPass[DeltaWeight, InputDelta, Output, OutputDelta, OutputDifferentiable] = {
-      forward.apply(weight, monoid, patch, input, inputDifferentiable)
-    }
-
   }
 
   object DifferentiableFunction {
@@ -136,11 +149,12 @@ object Differentiable {
     Output, OutputDelta, OutputDifferentiable <: Differentiable.Aux[Output, OutputDelta]
     ]
     (
-      forward: InputDifferentiable => (Input :: Weight, Monoid[InputDelta :: Delta], Patch[Input :: Weight, InputDelta :: Delta], Input2, InputDifferentiable2) => ForwardPass[InputDelta :: Delta, InputDelta2, Output, OutputDelta, OutputDifferentiable]
+      forward: InputDifferentiable => (Input :: Weight, Monoid[InputDelta :: Delta], Patch[Input :: Weight, InputDelta :: Delta], ToFastring[Input :: Weight], Input2, InputDifferentiable2) => ForwardPass[InputDelta :: Delta, InputDelta2, Output, OutputDelta, OutputDifferentiable]
     )(
       weight: Weight,
       monoid: Monoid[Delta],
       patch: Patch[Weight, Delta],
+      toFastring: ToFastring[Weight],
       input: Input,
       inputDifferentiable: InputDifferentiable
     ) = {
@@ -150,6 +164,7 @@ object Differentiable {
         DifferentiableFunction(
           HConsMonoid(inputDifferentiable.monoid, monoid),
           HConsPatch(inputDifferentiable.patch, patch),
+          HConsToFastring(inputDifferentiable.toFastring, toFastring),
           forward(inputDifferentiable)
         ), { hlistDelta =>
           BackwardPass(hlistDelta.tail, hlistDelta.head)
@@ -157,14 +172,14 @@ object Differentiable {
       )
     }
 
-    final case class BackwardPass[WeightDelta, InputDelta](weightDelta: WeightDelta, inputDelta: InputDelta)
+    final case class BackwardPass[+WeightDelta, +InputDelta](weightDelta: WeightDelta, inputDelta: InputDelta)
 
     final case class ForwardPass
     [WeightDelta, InputDelta, Output, OutputDelta, OutputDifferentiable <: Differentiable.Aux[Output, OutputDelta]]
     (output: Output, outputDifferentiable: OutputDifferentiable, backward: OutputDelta => BackwardPass[WeightDelta, InputDelta])
 
     def head[HeadData, HeadDelta, HeadDifferentiable <: Differentiable.Aux[HeadData, HeadDelta], TailData <: HList, TailDelta <: HList, TailDifferentiable <: Differentiable.Aux[TailData, TailDelta]] = {
-      DifferentiableFunction(HNilMonoid, HNilPatch, { (weight: HNil, monoid: Monoid[HNil], patch: Patch[HNil, HNil], hconsData: HeadData :: TailData, hconsDifferentiable: DifferentiableHCons[HeadData, HeadDelta, HeadDifferentiable, TailData, TailDelta, TailDifferentiable]) =>
+      DifferentiableFunction(HNilMonoid, HNilPatch, HNilToFastring, { (weight: HNil, monoid: Monoid[HNil], patch: Patch[HNil, HNil], toFastring: ToFastring[HNil], hconsData: HeadData :: TailData, hconsDifferentiable: DifferentiableHCons[HeadData, HeadDelta, HeadDifferentiable, TailData, TailDelta, TailDifferentiable]) =>
         ForwardPass(hconsData.head, hconsDifferentiable.headDifferentiable, { headDelta: HeadDelta =>
           BackwardPass(HNil: HNil, headDelta :: hconsDifferentiable.tailDifferentiable.monoid.empty)
         })
@@ -172,7 +187,7 @@ object Differentiable {
     }
 
     def tail[HeadData, HeadDelta, HeadDifferentiable <: Differentiable.Aux[HeadData, HeadDelta], TailData <: HList, TailDelta <: HList, TailDifferentiable <: Differentiable.Aux[TailData, TailDelta]] = {
-      DifferentiableFunction(HNilMonoid, HNilPatch, { (weight: HNil, monoid: Monoid[HNil], patch: Patch[HNil, HNil], hconsData: HeadData :: TailData, hconsDifferentiable: DifferentiableHCons[HeadData, HeadDelta, HeadDifferentiable, TailData, TailDelta, TailDifferentiable]) =>
+      DifferentiableFunction(HNilMonoid, HNilPatch, HNilToFastring, { (weight: HNil, monoid: Monoid[HNil], patch: Patch[HNil, HNil], toFastring: ToFastring[HNil], hconsData: HeadData :: TailData, hconsDifferentiable: DifferentiableHCons[HeadData, HeadDelta, HeadDifferentiable, TailData, TailDelta, TailDifferentiable]) =>
         ForwardPass(hconsData.tail, hconsDifferentiable.tailDifferentiable, { tailDelta: TailDelta =>
           BackwardPass(HNil: HNil, hconsDifferentiable.headDifferentiable.monoid.empty :: tailDelta)
         })
@@ -180,11 +195,12 @@ object Differentiable {
     }
 
     def hcons[HeadData, HeadDelta, HeadDifferentiable <: Differentiable.Aux[HeadData, HeadDelta], TailData <: HList, TailDelta <: HList, TailDifferentiable <: Differentiable.Aux[TailData, TailDelta]] = {
-      DifferentiableFunction(HNilMonoid, HNilPatch, DifferentiableFunction.partiallyForward { headDifferentiable: HeadDifferentiable =>
+      DifferentiableFunction(HNilMonoid, HNilPatch, HNilToFastring, DifferentiableFunction.partiallyForward { headDifferentiable: HeadDifferentiable =>
         (
           weight: HeadData :: HNil,
           monoid: Monoid[HeadDelta :: HNil],
           patch: Patch[HeadData :: HNil, HeadDelta :: HNil],
+          toFastring: ToFastring[HeadData :: HNil],
           tailData: TailData,
           tailDifferentiable: TailDifferentiable
         ) =>
@@ -196,11 +212,12 @@ object Differentiable {
     }
 
     def constant[AData, ADelta, ADifferentiable <: Differentiable.Aux[AData, ADelta], BData, BDelta, BDifferentiable <: Differentiable.Aux[BData, BDelta]] = {
-      DifferentiableFunction(HNilMonoid, HNilPatch, DifferentiableFunction.partiallyForward { aDifferentiable: ADifferentiable =>
+      DifferentiableFunction(HNilMonoid, HNilPatch, HNilToFastring, DifferentiableFunction.partiallyForward { aDifferentiable: ADifferentiable =>
         (
           weight: AData :: HNil,
           monoid: Monoid[ADelta :: HNil],
           patch: Patch[AData :: HNil, ADelta :: HNil],
+          toFastring: ToFastring[AData :: HNil],
           bData: BData,
           bDifferentiable: BDifferentiable
         ) =>
@@ -212,7 +229,7 @@ object Differentiable {
     }
 
     def id[AData, ADelta, ADifferentiable <: Differentiable.Aux[AData, ADelta]] = {
-      DifferentiableFunction(HNilMonoid, HNilPatch, { (weight: HNil, monoid: Monoid[HNil], patch: Patch[HNil, HNil], aData: AData, aDifferentiable: ADifferentiable) =>
+      DifferentiableFunction(HNilMonoid, HNilPatch, HNilToFastring, { (weight: HNil, monoid: Monoid[HNil], patch: Patch[HNil, HNil], toFastring: ToFastring[HNil], aData: AData, aDifferentiable: ADifferentiable) =>
         ForwardPass(aData, aDifferentiable, { aDelta: ADelta =>
           BackwardPass(HNil: HNil, aDelta)
         })
@@ -220,7 +237,7 @@ object Differentiable {
     }
 
     def freeze[AData, ADelta, ADifferentiable <: Differentiable.Aux[AData, ADelta]] = {
-      DifferentiableFunction(HNilMonoid, HNilPatch, { (weight: HNil, monoid: Monoid[HNil], patch: Patch[HNil, HNil], aData: AData, aDifferentiable: ADifferentiable) =>
+      DifferentiableFunction(HNilMonoid, HNilPatch, HNilToFastring, { (weight: HNil, monoid: Monoid[HNil], patch: Patch[HNil, HNil], toFastring: ToFastring[HNil], aData: AData, aDifferentiable: ADifferentiable) =>
         val aMonoid = aDifferentiable.monoid
         ForwardPass(aData, aDifferentiable, { aDelta: ADelta =>
           BackwardPass(HNil: HNil, aMonoid.empty)
@@ -239,13 +256,14 @@ object Differentiable {
       type FADifferentiable = DifferentiableFunction[FAWeight, FADelta, BData, BDelta, BDifferentiable, CData, CDelta, CDifferentiable]
       type FDifferentiable = DifferentiableFunction[FWeight, FDelta, AData, ADelta, ADifferentiable, FAWeight, FADelta, FADifferentiable]
       type GDifferentiable = DifferentiableFunction[GWeight, GDelta, AData, ADelta, ADifferentiable, BData, BDelta, BDifferentiable]
-      DifferentiableFunction(HNilMonoid, HNilPatch, DifferentiableFunction.partiallyForward {
+      DifferentiableFunction(HNilMonoid, HNilPatch, HNilToFastring, DifferentiableFunction.partiallyForward {
         fDifferentiable: FDifferentiable =>
           DifferentiableFunction.partiallyForward { gDifferentiable: GDifferentiable =>
             (
               weight: GWeight :: FWeight :: HNil,
               monoid: Monoid[GDelta :: FDelta :: HNil],
               patch: Patch[GWeight :: FWeight :: HNil, GDelta :: FDelta :: HNil],
+              toFastring: ToFastring[GWeight :: FWeight :: HNil],
               aData: AData,
               aDifferentiable: ADifferentiable
             ) =>
@@ -261,6 +279,14 @@ object Differentiable {
 
           }
       })
+    }
+  }
+
+  final case class HConsToFastring[Head, Tail <: HList]
+  (headToFastring: ToFastring[Head], tailToFastring: ToFastring[Tail])
+    extends ToFastring[Head :: Tail] {
+    override def apply(data: Head :: Tail) = {
+      fast"(${headToFastring(data.head)}::${tailToFastring(data.tail)})"
     }
   }
 
@@ -280,9 +306,9 @@ object Differentiable {
     }
   }
 
-  val HNilPatch = { (data: HNil, delta: HNil, learningRate: Double) =>
-    HNil
-  }
+  val HNilPatch = { (data: HNil, delta: HNil, learningRate: Double) => HNil }
+
+  val HNilToFastring = { data: HNil => fast"HNil" }
 
   object HNilMonoid extends Monoid[HNil] {
     override def empty = HNil
@@ -290,68 +316,82 @@ object Differentiable {
     override def combine(x: HNil, y: HNil) = HNil
   }
 
-  final case class DifferentiableHCons[HeadData, HeadDelta, HeadDifferentiable <: Differentiable.Aux[HeadData, HeadDelta], TailData <: HList, TailDelta <: HList, TailDifferentiable <: Differentiable.Aux[TailData, TailDelta]]
+  sealed trait DifferentiableHList[Data0 <: HList] extends Differentiable[Data0] {
+    type Delta <: HList
+
+    def ::[HeadData, HeadDelta](headDifferentiable: Differentiable.Aux[HeadData, HeadDelta]) = {
+      DifferentiableHCons[HeadData, HeadDelta, headDifferentiable.type, Data0, Delta, this.type](headDifferentiable, this)
+    }
+
+  }
+
+  final case class DifferentiableHCons[HeadData, HeadDelta, +HeadDifferentiable <: Differentiable.Aux[HeadData, HeadDelta], TailData <: HList, TailDelta <: HList, +TailDifferentiable <: Differentiable.Aux[TailData, TailDelta]]
   (
     headDifferentiable: HeadDifferentiable,
     tailDifferentiable: TailDifferentiable
-  ) extends Differentiable[HeadData :: TailData] {
+  ) extends DifferentiableHList[HeadData :: TailData] {
+    _: Differentiable.Aux[HeadData :: TailData, HeadDelta :: TailDelta] =>
     override type Delta = HeadDelta :: TailDelta
+
+    override def toFastring = HConsToFastring(headDifferentiable.toFastring, tailDifferentiable.toFastring)
 
     override def monoid: Monoid[HeadDelta :: TailDelta] = HConsMonoid(headDifferentiable.monoid, tailDifferentiable.monoid)
 
     override def patch: Patch[HeadData :: TailData, HeadDelta :: TailDelta] = HConsPatch(headDifferentiable.patch, tailDifferentiable.patch)
   }
 
-  case object DifferentialbeHNil extends Differentiable[HNil] {
+  case object DifferentiableHNil extends DifferentiableHList[HNil] {
     override type Delta = HNil
 
     override def monoid = HNilMonoid
 
     override def patch = HNilPatch
+
+    override def toFastring = HNilToFastring
   }
 
   trait DifferentiableInstances extends PointfreeFreezing[WeakOps] {
 
     override def hnil = {
-      DifferentialbeHNil.pureOps.erase[HNil]
+      DifferentiableHNil.pureOps[HNil]
     }
 
     override def hcons[Head, Tail <: HList] = {
-      DifferentiableFunction.hcons.pureOps.erase[Head => Tail => Head :: Tail]
+      DifferentiableFunction.hcons.pureOps[Head => Tail => Head :: Tail]
     }
 
     override def head[Head, Tail <: HList] = {
-      DifferentiableFunction.head.pureOps.erase[Head :: Tail => Head]
+      DifferentiableFunction.head.pureOps[Head :: Tail => Head]
 
     }
 
     override def tail[Head, Tail <: HList] = {
-      DifferentiableFunction.tail.pureOps.erase[Head :: Tail => Tail]
+      DifferentiableFunction.tail.pureOps[Head :: Tail => Tail]
     }
 
-    override def substitute[A, B, C] = {
-      DifferentiableFunction.substitute.pureOps.erase[((A) => (B) => C) => ((A) => B) => (A) => C]
+    override def substitute[A, B, C]: WeakOps[((A) => (B) => C) => ((A) => B) => (A) => C] = {
+      DifferentiableFunction.substitute.pureOps[((A) => (B) => C) => ((A) => B) => (A) => C]
     }
 
     override def id[A] = {
-      DifferentiableFunction.id.pureOps.erase[A => A]
+      DifferentiableFunction.id.pureOps[A => A]
     }
 
     override def constant[A, B] = {
-      DifferentiableFunction.constant.pureOps.erase[A => B => A]
+      DifferentiableFunction.constant.pureOps[A => B => A]
 
     }
 
     override def freeze[A] = {
-      DifferentiableFunction.freeze.pureOps.erase[A => A]
+      DifferentiableFunction.freeze.pureOps[A => A]
     }
 
     override def fromHListFunction2[A, B, R] = {
-      DifferentiableFunction.id.pureOps.erase[(A :: B :: HNil => R) => (A, B) => R]
+      DifferentiableFunction.id.pureOps[(A :: B :: HNil => R) => (A, B) => R]
     }
 
     override def toHListFunction2[A, B, R] = {
-      DifferentiableFunction.id.pureOps.erase[((A, B) => R) => A :: B :: HNil => R]
+      DifferentiableFunction.id.pureOps[((A, B) => R) => A :: B :: HNil => R]
     }
 
     override def ap[A, R](ff: WeakOps[A => R])(fa: WeakOps[A]): WeakOps[R] = {
@@ -376,7 +416,10 @@ object Differentiable {
        ) = {
         val input = weakInput.asInstanceOf[StrongOps[Input, InputDelta, InputDifferentiable]]
         val forwardPass = strongFF.typeClassInstance.forward(strongFF.self, input.self, input.typeClassInstance)
-        tag[R].apply(StrongOps[Output, OutputDelta, OutputDifferentiable](forwardPass.output, forwardPass.outputDifferentiable))
+        new AllOps[Output] with WeakOps[R] {
+          override val self = forwardPass.output
+          override val typeClassInstance: OutputDifferentiable = forwardPass.outputDifferentiable
+        }
       }
       forceAp(ff.asInstanceOf[StrongFunctionAst], fa)
     }
