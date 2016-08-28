@@ -2,9 +2,11 @@ package com.thoughtworks
 
 import org.scalatest.{FreeSpec, Matchers}
 import Differentiable._
+
 import org.scalactic.TypeCheckedTripleEquals._
-import shapeless.HNil
 import scala.language.existentials
+import shapeless._
+import WeakOps._
 
 /**
   * @author 杨博 (Yang Bo) &lt;pop.atry@gmail.com&gt;
@@ -24,5 +26,20 @@ class DifferentiableSpec extends FreeSpec with Matchers {
     strong.toWeak should ===(weak)
   }
 
+  "WeakOps[HNil :: HNil].toStrong.toWeak" in {
+    """
+    val weak: Differentiable.WeakOps[HNil :: HNil] = ???
+    val strong = weak.toStrong
+    val data: HNil :: HNil = strong.self
+    strong.toWeak
+    """ should compile
+  }
+
+  "WeakOps[(HNil :: HNil :: HNil) => (HNil :: HNil)].toStrong.toWeak" in {
+    val weak = Differentiable.DifferentiableInstances.tail[HNil, HNil :: HNil]
+    val strong = weak.toStrong
+    strong.forward(HNil :: HNil :: HNil)
+    strong.toWeak should ===(weak)
+  }
 
 }

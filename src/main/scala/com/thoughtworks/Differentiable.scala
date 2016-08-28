@@ -71,10 +71,122 @@ object Differentiable {
   InputData, InputDelta, InputDifferentiable <: Differentiable.Aux[InputData, InputDelta],
   OutputData, OutputDelta, OutputDifferentiable <: Differentiable.Aux[OutputData, OutputDelta]
   ] = AllOps[Weight] with WeakOps[_] {
+    def self: typeClassInstance.Data
     val typeClassInstance: DifferentiableFunction[Weight, WeightDelta, InputData, InputDelta, InputDifferentiable, OutputData, OutputDelta, OutputDifferentiable]
   }
 
-  object WeakOps {
+
+  trait WeakOps[+A] {
+    _: AllOps[_] =>
+
+  }
+
+  trait WeakOps0 {
+    _: WeakOps.type =>
+
+
+    implicit def functionToWeak[InputDifferentiable <: Differentiable[_], OutputDifferentiable <: Differentiable[_]]
+    (
+      implicit inputToWeak: ToWeak[InputDifferentiable],
+      outputToWeak: ToWeak[OutputDifferentiable]
+    ) = {
+      new ToWeak[DifferentiableFunction[
+        _, _,
+        _, _, InputDifferentiable,
+        _, _, OutputDifferentiable
+        ]] {
+        override type WeakOpsResult = inputToWeak.WeakOpsResult => outputToWeak.WeakOpsResult
+      }
+    }
+
+    implicit def functionToStrong[Input, Output]
+    (
+      implicit inputMapping: ToStrong[Input] ,
+      outputMapping: ToStrong[Output]
+    ) = {
+      new ToStrong[Input => Output] {
+        type StrongOpsResult = FunctionOps[
+          Data, Delta,
+          inputMapping.Data, inputMapping.Delta, inputMapping.TypeClass,
+          outputMapping.Data, outputMapping.Delta, outputMapping.TypeClass
+          ]
+        type TypeClass = DifferentiableFunction[
+          Data, Delta,
+          inputMapping.Data, inputMapping.Delta, inputMapping.TypeClass,
+          outputMapping.Data, outputMapping.Delta, outputMapping.TypeClass
+          ]
+      }
+    }
+  }
+
+  trait WeakOps1 extends WeakOps0 {
+    _: WeakOps.type =>
+
+
+    implicit def hconsToWeak[
+    HeadDifferentiable <: Differentiable[_],
+    TailDifferentiable <: Differentiable[_]
+    ]
+    (implicit headToWeak: Lazy[ToWeak[HeadDifferentiable]], tailToWeak: Lazy[ToWeak[TailDifferentiable] {
+      type WeakOpsResult <: HList
+    }])
+    = new ToWeak[
+      DifferentiableHCons[_, _, HeadDifferentiable, _, _, TailDifferentiable]
+      ] {
+      type WeakOpsResult = headToWeak.value.WeakOpsResult :: tailToWeak.value.WeakOpsResult
+    }
+
+
+    implicit def hnilToStrong = new ToStrong[HNil] {
+      type Data = HNil
+      type Delta = HNil
+      type TypeClass = DifferentiableHNil.type
+      type StrongOpsResult = StrongOps[HNil, HNil, DifferentiableHNil.type]
+    }
+
+    implicit object hnilToWeak extends ToWeak[DifferentiableHNil.type] {
+      type WeakOpsResult = HNil
+    }
+
+  }
+
+  trait WeakOps2 extends WeakOps1 {
+    _: WeakOps.type =>
+
+    implicit def hconsToStrong[
+    Head,
+    Tail <: HList
+    ]
+    (
+      implicit headToStrong: ToStrong[Head] ,
+      tailToStrong: ToStrong[Tail] {
+        type Data <: HList
+        type Delta <: HList
+      }
+    ) = {
+      new ToStrong[Head :: Tail] {
+        type Data = headToStrong.Data :: (tailToStrong.Data)
+        type Delta = headToStrong.Delta :: (tailToStrong.Delta)
+        type TypeClass = DifferentiableHCons[
+          headToStrong.Data, headToStrong.Delta,
+          headToStrong.TypeClass,
+          tailToStrong.Data, tailToStrong.Delta,
+          tailToStrong.TypeClass
+          ]
+        type StrongOpsResult = StrongOps[Data, Delta, TypeClass]
+      }
+    }
+  }
+
+  object WeakOps extends WeakOps2 {
+
+
+    implicit final class ToStrongOps[A](val weakOps: WeakOps[A]) {
+      final def toStrong(implicit mapping: ToStrong[A])
+      : mapping.StrongOpsResult with weakOps.type = {
+        weakOps.asInstanceOf[mapping.StrongOpsResult with weakOps.type]
+      }
+    }
 
     implicit final class ToWeakOps[D <: Differentiable[_]](val underlying: WeakOps[_] with AllOps[_] {
       val typeClassInstance: D
@@ -85,86 +197,30 @@ object Differentiable {
     }
 
     implicit final class ForwardOps[
-    Weight, WeightDelta,
+    WeightDelta,
     InputData, InputDelta, InputDifferentiable <: Differentiable.Aux[InputData, InputDelta],
     OutputData, OutputDelta, OutputDifferentiable <: Differentiable.Aux[OutputData, OutputDelta]
-    ](val underlying: FunctionOps[Weight, WeightDelta, InputData, InputDelta, InputDifferentiable, OutputData, OutputDelta, OutputDifferentiable]) {
+    ](val underlying: FunctionOps[_, WeightDelta, InputData, InputDelta, InputDifferentiable, OutputData, OutputDelta, OutputDifferentiable]) {
       @inline
       final def forward(input: InputData)(implicit inputDifferentiable: InputDifferentiable)
-      : DifferentiableFunction.ForwardPass[WeightDelta, InputDelta, OutputData, OutputDelta, OutputDifferentiable] = {
-        val f = underlying.typeClassInstance
-        f.forward(underlying.self, input, inputDifferentiable)
+      : DifferentiableFunction.ForwardPass[underlying.typeClassInstance.Delta, InputDelta, OutputData, OutputDelta, OutputDifferentiable] = {
+        underlying.typeClassInstance.forward(underlying.self, input, inputDifferentiable)
       }
     }
 
 
-  }
+    trait ToWeak[-TypeClass0] {
+      type WeakOpsResult
+    }
 
-  trait WeakOps[+A] {
-    _: AllOps[_] =>
-
-    final def toStrong(implicit mapping: ToStrong[_ >: A])
-    : mapping.StrongOpsResult with this.type = {
-      this.asInstanceOf[mapping.StrongOpsResult with this.type]
+    trait ToStrong[WeakType] {
+      type Data
+      type Delta
+      type TypeClass <: Differentiable.Aux[Data, Delta]
+      type StrongOpsResult <: StrongOps[Data, Delta, TypeClass]
     }
 
   }
-
-  //  object OpsMapping {
-  implicit def hnilMapping = new OpsMapping[HNil, DifferentiableHNil.type] {
-    type Data = HNil
-    type Delta = HNil
-  }
-
-  implicit def functionToWeak[InputDifferentiable <: Differentiable[_], OutputDifferentiable <: Differentiable[_]]
-  (
-    implicit inputToWeak: ToWeak[InputDifferentiable],
-    outputToWeak: ToWeak[OutputDifferentiable]
-  ) = {
-    new ToWeak[DifferentiableFunction[
-      _, _,
-      _, _, InputDifferentiable,
-      _, _, OutputDifferentiable
-      ]] {
-      override type WeakOpsResult = inputToWeak.WeakOpsResult => outputToWeak.WeakOpsResult
-    }
-  }
-
-  implicit def functionToStrong[Input, Output]
-  (
-    implicit inputMapping: ToStrong[Input],
-    outputMapping: ToStrong[Output]
-  ) = {
-    new ToStrong[Input => Output] {
-      type StrongOpsResult = FunctionOps[
-        Data, Delta,
-        inputMapping.Data, inputMapping.Delta, inputMapping.TypeClass with Differentiable.Aux[inputMapping.Data, inputMapping.Delta],
-        outputMapping.Data, outputMapping.Delta, outputMapping.TypeClass with Differentiable.Aux[outputMapping.Data, outputMapping.Delta]
-        ]
-      type TypeClass = DifferentiableFunction[
-        Data, Delta,
-        inputMapping.Data, inputMapping.Delta, inputMapping.TypeClass with Differentiable.Aux[inputMapping.Data, inputMapping.Delta],
-        outputMapping.Data, outputMapping.Delta, outputMapping.TypeClass with Differentiable.Aux[outputMapping.Data, outputMapping.Delta]
-        ]
-    }
-  }
-
-
-  trait ToWeak[-TypeClass0] {
-    type WeakOpsResult
-    type TypeClass = TypeClass0
-  }
-
-  trait ToStrong[-WeakType] {
-    type Data
-    type Delta
-    type TypeClass
-    type StrongOpsResult <: StrongOps[Data, Delta, TypeClass with Differentiable.Aux[Data, Delta]]
-    type WeakOpsResult = WeakType
-  }
-
-  trait OpsMapping[WeakType, TypeClass0] extends ToWeak[TypeClass0] with ToStrong[WeakType]
-
 
   @typeclass
   trait Freezing[F[_]] {
@@ -437,7 +493,15 @@ object Differentiable {
     override def patch: Patch[HeadData :: TailData, HeadDelta :: TailDelta] = HConsPatch(headDifferentiable.patch, tailDifferentiable.patch)
   }
 
-  case object DifferentiableHNil extends DifferentiableHList[HNil] {
+  implicit def differentiableHCons[Head, HeadDelta, HeadDifferentiable <: Differentiable.Aux[Head, HeadDelta], Tail <: HList, TailDelta <: HList, TailDifferentiable <: Differentiable.Aux[Tail, TailDelta]]
+  (
+    implicit headDifferentiable: HeadDifferentiable,
+    tailDifferentiable: TailDifferentiable
+  ) = {
+    DifferentiableHCons[Head, HeadDelta, HeadDifferentiable, Tail, TailDelta, TailDifferentiable](headDifferentiable, tailDifferentiable)
+  }
+
+  implicit case object DifferentiableHNil extends DifferentiableHList[HNil] {
     override type Delta = HNil
 
     override def monoid = HNilMonoid
@@ -522,6 +586,6 @@ object Differentiable {
     }
   }
 
-  object DifferentiableInstances extends DifferentiableInstances
+  implicit object DifferentiableInstances extends DifferentiableInstances
 
 }
