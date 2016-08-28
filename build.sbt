@@ -8,7 +8,7 @@ incOptions := incOptions.value.withNameHashing(true).withRecompileOnMacroDef(fal
 
 libraryDependencies += "com.dongxiguo" %% "fastring" % "0.2.4"
 
-libraryDependencies += "org.scalatest" %% "scalatest" % "3.0.0-M15" % Test
+libraryDependencies += "org.scalatest" %% "scalatest" % "3.0.0" % Test
 
 addCompilerPlugin("org.scalamacros" % "paradise" % "2.1.0" cross CrossVersion.full)
 
