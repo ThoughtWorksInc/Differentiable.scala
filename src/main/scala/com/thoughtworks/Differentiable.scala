@@ -1,11 +1,11 @@
 package com.thoughtworks
 
 import scala.language.existentials
-import cats.{Eval, Monoid}
+import cats.Monoid
 import com.dongxiguo.fastring.Fastring
 import com.dongxiguo.fastring.Fastring.Implicits._
 import shapeless.tag._
-import shapeless.{::, HList, HNil, tag}
+import shapeless.{::, DepFn1, HList, HNil, Lazy, tag}
 import simulacrum.{op, typeclass}
 
 import scala.language.higherKinds
@@ -43,14 +43,6 @@ trait Differentiable[Data0] extends AnyRef {
     }
   }
 
-  @inline
-  final def forward[Input, Output, OutputDelta, OutputDifferentiable <: Differentiable.Aux[Output, OutputDelta]]
-  (weight: Data0, input: Input, inputDifferentiable: Differentiable[Input])
-  (implicit constraint: typeClassInstance.type <:< DifferentiableFunction[Data0, Delta, Input, inputDifferentiable.Delta, _ >: inputDifferentiable.type, Output, OutputDelta, OutputDifferentiable])
-  : DifferentiableFunction.ForwardPass[Delta, inputDifferentiable.Delta, Output, OutputDelta, OutputDifferentiable] = {
-    val f = constraint(this)
-    f.forward.apply(weight, f.monoid, f.patch, f.toFastring, input, inputDifferentiable)
-  }
 
   @inline
   @op("toFastring")
@@ -70,13 +62,109 @@ object Differentiable {
 
   type ToFastring[Data] = Data => Fastring
 
-  type StrongOps[Data, Weight, +TypeClass <: Differentiable.Aux[Data, Weight]] = AllOps[Data] with WeakOps[_] {
+  type StrongOps[Data0, Delta0, +TypeClass <: Differentiable.Aux[Data0, Delta0]] = AllOps[Data0] with WeakOps[_] {
     val typeClassInstance: TypeClass
+  }
+
+  type FunctionOps[
+  Weight, WeightDelta,
+  InputData, InputDelta, InputDifferentiable <: Differentiable.Aux[InputData, InputDelta],
+  OutputData, OutputDelta, OutputDifferentiable <: Differentiable.Aux[OutputData, OutputDelta]
+  ] = AllOps[Weight] with WeakOps[_] {
+    val typeClassInstance: DifferentiableFunction[Weight, WeightDelta, InputData, InputDelta, InputDifferentiable, OutputData, OutputDelta, OutputDifferentiable]
+  }
+
+  object WeakOps {
+
+    implicit final class ToWeakOps[D <: Differentiable[_]](val underlying: WeakOps[_] with AllOps[_] {
+      val typeClassInstance: D
+    }) {
+      def toWeak(implicit mapping: ToWeak[D]): underlying.type with mapping.WeakOpsResult = {
+        underlying.asInstanceOf[underlying.type with mapping.WeakOpsResult]
+      }
+    }
+
+    implicit final class ForwardOps[
+    Weight, WeightDelta,
+    InputData, InputDelta, InputDifferentiable <: Differentiable.Aux[InputData, InputDelta],
+    OutputData, OutputDelta, OutputDifferentiable <: Differentiable.Aux[OutputData, OutputDelta]
+    ](val underlying: FunctionOps[Weight, WeightDelta, InputData, InputDelta, InputDifferentiable, OutputData, OutputDelta, OutputDifferentiable]) {
+      @inline
+      final def forward(input: InputData)(implicit inputDifferentiable: InputDifferentiable)
+      : DifferentiableFunction.ForwardPass[WeightDelta, InputDelta, OutputData, OutputDelta, OutputDifferentiable] = {
+        val f = underlying.typeClassInstance
+        f.forward(underlying.self, input, inputDifferentiable)
+      }
+    }
+
+
   }
 
   trait WeakOps[+A] {
     _: AllOps[_] =>
+
+    final def toStrong(implicit mapping: ToStrong[_ >: A])
+    : mapping.StrongOpsResult with this.type = {
+      this.asInstanceOf[mapping.StrongOpsResult with this.type]
+    }
+
   }
+
+  //  object OpsMapping {
+  implicit def hnilMapping = new OpsMapping[HNil, DifferentiableHNil.type] {
+    type Data = HNil
+    type Delta = HNil
+  }
+
+  implicit def functionToWeak[InputDifferentiable <: Differentiable[_], OutputDifferentiable <: Differentiable[_]]
+  (
+    implicit inputToWeak: ToWeak[InputDifferentiable],
+    outputToWeak: ToWeak[OutputDifferentiable]
+  ) = {
+    new ToWeak[DifferentiableFunction[
+      _, _,
+      _, _, InputDifferentiable,
+      _, _, OutputDifferentiable
+      ]] {
+      override type WeakOpsResult = inputToWeak.WeakOpsResult => outputToWeak.WeakOpsResult
+    }
+  }
+
+  implicit def functionToStrong[Input, Output]
+  (
+    implicit inputMapping: ToStrong[Input],
+    outputMapping: ToStrong[Output]
+  ) = {
+    new ToStrong[Input => Output] {
+      type StrongOpsResult = FunctionOps[
+        Data, Delta,
+        inputMapping.Data, inputMapping.Delta, inputMapping.TypeClass with Differentiable.Aux[inputMapping.Data, inputMapping.Delta],
+        outputMapping.Data, outputMapping.Delta, outputMapping.TypeClass with Differentiable.Aux[outputMapping.Data, outputMapping.Delta]
+        ]
+      type TypeClass = DifferentiableFunction[
+        Data, Delta,
+        inputMapping.Data, inputMapping.Delta, inputMapping.TypeClass with Differentiable.Aux[inputMapping.Data, inputMapping.Delta],
+        outputMapping.Data, outputMapping.Delta, outputMapping.TypeClass with Differentiable.Aux[outputMapping.Data, outputMapping.Delta]
+        ]
+    }
+  }
+
+
+  trait ToWeak[-TypeClass0] {
+    type WeakOpsResult
+    type TypeClass = TypeClass0
+  }
+
+  trait ToStrong[-WeakType] {
+    type Data
+    type Delta
+    type TypeClass
+    type StrongOpsResult <: StrongOps[Data, Delta, TypeClass with Differentiable.Aux[Data, Delta]]
+    type WeakOpsResult = WeakType
+  }
+
+  trait OpsMapping[WeakType, TypeClass0] extends ToWeak[TypeClass0] with ToStrong[WeakType]
+
 
   @typeclass
   trait Freezing[F[_]] {
@@ -88,7 +176,7 @@ object Differentiable {
     trait WithParameter[F[_], Parameter] extends Pointfree.WithParameter[F, Parameter] with PointfreeFreezing[Lambda[X => F[Parameter => X]]] {
       implicit protected def outer: PointfreeFreezing[F]
 
-      def freeze[A] = outer.freeze[A].withParameter
+      def freeze[A] = (outer.freeze[A]: F[A => A]).withParameter
     }
 
     implicit def withParameterInstances[F[_], Parameter](implicit underlying: PointfreeFreezing[F]) = new WithParameter[F, Parameter] {
@@ -97,11 +185,16 @@ object Differentiable {
   }
 
   @typeclass
-  trait PointfreeFreezing[F[_]] extends Pointfree[F] with Freezing[F]
+  trait PointfreeFreezing[F[_]] extends Pointfree[F] with Freezing[F] {
+
+    def freeze[A](fa: F[A]): F[A] = {
+      ap(freeze[A])(fa)
+    }
+
+  }
 
 
   case object NeverChange {
-    val eval = Eval.now(this)
 
     object NeverChangeInstances extends Monoid[NoPatch.type] with ((NeverChange.type, NoPatch.type, Double) => NeverChange.type) {
       override def empty = NoPatch
@@ -138,6 +231,10 @@ object Differentiable {
   ) extends Differentiable[Weight] {
     _: Differentiable.Aux[Weight, DeltaWeight] =>
     override type Delta = DeltaWeight
+
+    def forward(weight: Weight, input: Input, inputDifferentiable: InputDifferentiable): DifferentiableFunction.ForwardPass[DeltaWeight, InputDelta, Output, OutputDelta, OutputDifferentiable] = {
+      forward.apply(weight, monoid, patch, toFastring, input, inputDifferentiable)
+    }
   }
 
   object DifferentiableFunction {
