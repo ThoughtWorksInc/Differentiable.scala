@@ -41,5 +41,12 @@ class DifferentiableSpec extends FreeSpec with Matchers {
     strong.forward(HNil :: HNil :: HNil)
     strong.toWeak should ===(weak)
   }
+  
+  "WeakOps[constanct.toStrong.toWeak" in {
+    val weak = Differentiable.DifferentiableInstances.constant[HNil :: HNil, HNil]
+    val strong = weak.toStrong
+    strong.forward(HNil :: HNil)
+    strong.toWeak should ===(weak)
+  }
 
 }
