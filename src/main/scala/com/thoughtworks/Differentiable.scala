@@ -95,13 +95,13 @@ object Differentiable {
         _, _, InputDifferentiable,
         _, _, OutputDifferentiable
         ]] {
-        override type WeakOpsResult = inputToWeak.WeakOpsResult => outputToWeak.WeakOpsResult
+        override type WeakType = inputToWeak.WeakType => outputToWeak.WeakType
       }
     }
 
     implicit def functionToStrong[Input, Output]
     (
-      implicit inputMapping: ToStrong[Input] ,
+      implicit inputMapping: ToStrong[Input],
       outputMapping: ToStrong[Output]
     ) = {
       new ToStrong[Input => Output] {
@@ -117,6 +117,39 @@ object Differentiable {
           ]
       }
     }
+
+    implicit def function2ToStrong[Input0, Input1, Output]
+    (
+      implicit input0Mapping: ToStrong[Input0],
+      input1Mapping: ToStrong[Input1],
+      outputMapping: ToStrong[Output]
+    ) = {
+      new ToStrong[(Input0, Input1) => Output] {
+
+        type Input = Input0 :: Input1 :: HNil
+        type InputData = input0Mapping.Data :: input1Mapping.Data :: HNil
+        type InputDelta = input0Mapping.Delta :: input1Mapping.Delta :: HNil
+        type InputTypeClass = DifferentiableHCons[
+          input0Mapping.Data, input0Mapping.Delta, input0Mapping.TypeClass,
+          input1Mapping.Data :: HNil, input1Mapping.Delta :: HNil,
+          DifferentiableHCons[
+            input1Mapping.Data, input1Mapping.Delta, input1Mapping.TypeClass,
+            HNil, HNil, DifferentiableHNil.type
+            ]
+          ]
+
+        type StrongOpsResult = FunctionOps[
+          Data, Delta,
+          InputData, InputDelta, InputTypeClass,
+          outputMapping.Data, outputMapping.Delta, outputMapping.TypeClass
+          ]
+        type TypeClass = DifferentiableFunction[
+          Data, Delta,
+          InputData, InputDelta, InputTypeClass,
+          outputMapping.Data, outputMapping.Delta, outputMapping.TypeClass
+          ]
+      }
+    }
   }
 
   trait WeakOps1 extends WeakOps0 {
@@ -128,24 +161,24 @@ object Differentiable {
     TailDifferentiable <: Differentiable[_]
     ]
     (implicit headToWeak: Lazy[ToWeak[HeadDifferentiable]], tailToWeak: Lazy[ToWeak[TailDifferentiable] {
-      type WeakOpsResult <: HList
+      type WeakType <: HList
     }])
     = new ToWeak[
       DifferentiableHCons[_, _, HeadDifferentiable, _, _, TailDifferentiable]
       ] {
-      type WeakOpsResult = headToWeak.value.WeakOpsResult :: tailToWeak.value.WeakOpsResult
+      type WeakType = headToWeak.value.WeakType :: tailToWeak.value.WeakType
     }
 
 
-    implicit def hnilToStrong = new ToStrong[HNil] {
+    implicit object HNilToStrong extends ToStrong[HNil] {
       type Data = HNil
       type Delta = HNil
       type TypeClass = DifferentiableHNil.type
       type StrongOpsResult = StrongOps[HNil, HNil, DifferentiableHNil.type]
     }
 
-    implicit object hnilToWeak extends ToWeak[DifferentiableHNil.type] {
-      type WeakOpsResult = HNil
+    implicit object HNilToWeak extends ToWeak[DifferentiableHNil.type] {
+      type WeakType = HNil
     }
 
   }
@@ -158,7 +191,7 @@ object Differentiable {
     Tail <: HList
     ]
     (
-      implicit headToStrong: ToStrong[Head] ,
+      implicit headToStrong: ToStrong[Head],
       tailToStrong: ToStrong[Tail] {
         type Data <: HList
         type Delta <: HList
@@ -191,8 +224,9 @@ object Differentiable {
     implicit final class ToWeakOps[D <: Differentiable[_]](val underlying: WeakOps[_] with AllOps[_] {
       val typeClassInstance: D
     }) {
-      def toWeak(implicit mapping: ToWeak[D]): underlying.type with mapping.WeakOpsResult = {
-        underlying.asInstanceOf[underlying.type with mapping.WeakOpsResult]
+      //      type TW[-W] = ToWeak[_ >: W]
+      def toWeak(implicit mapping: ToWeak[D]): underlying.type with WeakOps[mapping.WeakType ]= {
+        underlying.asInstanceOf[underlying.type with WeakOps[mapping.WeakType]]
       }
     }
 
@@ -210,7 +244,11 @@ object Differentiable {
 
 
     trait ToWeak[-TypeClass0] {
-      type WeakOpsResult
+      type WeakType
+    }
+
+    object ToWeak {
+      type Aux[TypeClass0] = ToWeak[TypeClass0]
     }
 
     trait ToStrong[WeakType] {
