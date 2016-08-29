@@ -199,19 +199,17 @@ object Differentiable {
       }
     }
 
-    implicit final class ToStrongOps[A](val weakOps: WeakOps[A]) {
-      final def toStrong(implicit mapping: ToStrong[A])
-      : mapping.StrongOpsResult with weakOps.type = {
-        weakOps.asInstanceOf[mapping.StrongOpsResult with weakOps.type]
-      }
-    }
-
     implicit final class ToWeakOps[D <: Differentiable[_]](val underlying: WeakOps[_] with AllOps[_] {
       val typeClassInstance: D
     }) {
-      //      type TW[-W] = ToWeak[_ >: W]
-      def toWeak(implicit mapping: ToWeak[D]): underlying.type with WeakOps[mapping.WeakType ]= {
-        underlying.asInstanceOf[underlying.type with WeakOps[mapping.WeakType]]
+      def toWeak(implicit mapping: ToWeak[D]): /*underlying.type with*/ WeakOps[mapping.WeakType] = {
+        underlying.asInstanceOf[/*underlying.type with*/ WeakOps[mapping.WeakType]]
+      }
+    }
+
+    implicit final class ToStrongOps[A](val underlying: WeakOps[A]) {
+      def toStrong(implicit mapping: ToStrong[A]): /*underlying.type with*/ mapping.StrongOpsResult = {
+        underlying.asInstanceOf[/*underlying.type with*/ mapping.StrongOpsResult]
       }
     }
 
