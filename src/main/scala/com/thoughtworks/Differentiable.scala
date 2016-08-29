@@ -81,8 +81,7 @@ object Differentiable {
 
   }
 
-  trait WeakOps0 {
-    _: WeakOps.type =>
+  object WeakOps {
 
 
     implicit def functionToWeak[InputDifferentiable <: Differentiable[_], OutputDifferentiable <: Differentiable[_]]
@@ -150,11 +149,6 @@ object Differentiable {
           ]
       }
     }
-  }
-
-  trait WeakOps1 extends WeakOps0 {
-    _: WeakOps.type =>
-
 
     implicit def hconsToWeak[
     HeadDifferentiable <: Differentiable[_],
@@ -181,11 +175,6 @@ object Differentiable {
       type WeakType = HNil
     }
 
-  }
-
-  trait WeakOps2 extends WeakOps1 {
-    _: WeakOps.type =>
-
     implicit def hconsToStrong[
     Head,
     Tail <: HList
@@ -209,10 +198,6 @@ object Differentiable {
         type StrongOpsResult = StrongOps[Data, Delta, TypeClass]
       }
     }
-  }
-
-  object WeakOps extends WeakOps2 {
-
 
     implicit final class ToStrongOps[A](val weakOps: WeakOps[A]) {
       final def toStrong(implicit mapping: ToStrong[A])
